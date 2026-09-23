@@ -22,8 +22,8 @@ endif
 
 RSF_FILE	:= app/build-cia.rsf
 BNR_IMAGE	:= app/banner.cgfx
-BNR_AUDIO	:= app/audio.wav
-ICON		:= app/icon.png
+BNR_AUDIO	:= app/source/audio.wav
+ICON		:= app/source/icon.png
 
 APP_TITLE	:= CTGP-7 Mod Manager
 APP_DESCRIPTION := Simple Mod Manager For CTGP-7
