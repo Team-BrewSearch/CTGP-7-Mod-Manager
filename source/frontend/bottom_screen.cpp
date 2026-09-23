@@ -254,7 +254,7 @@ void bottom_browse() {
   // If an overlay is active, draw it full-screen and ignore other controls.
   if (model::bottom_overlay == model::BottomOverlay::ABOUT) {
     ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-    static const char *about_content = "CTGP-7 Mod Manager: A 3DS homebrew app to manage CTGP-7 mods.\n\nCredits: NitroShell (Lead/Code), bonkmaykr (Code/Audio/Logo), MisakiP_ (Code/QA), Straky (Icon/QA), Orj_Osc (QA), gameonion (CTGP-7 Logo).\n\nProvided as-is. Use at your own risk.";
+    static const char *about_content = "CTGP-7 Mod Manager: A 3DS homebrew app to manage CTGP-7 mods.\n\nCredits: NitroShell (Lead/Code), bonkmaykr (Code/Audio/Logo), MisakiP_ (Code/QA), Straky (Icon/QA), Epic0522(Banner Fix), Orj_Osc (QA), gameonion (CTGP-7 Logo).\n\nProvided as-is. Use at your own risk.";
     text_centered("About / Credits", cfg::IM_GOLD, 16.0f);
     ImGui::SetCursorPos(ImVec2(12.0f, 36.0f));
     ImGui::PushTextWrapPos(12.0f + (cfg::BOT_W - 24.0f));
