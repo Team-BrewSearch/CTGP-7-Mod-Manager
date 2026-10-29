@@ -27,6 +27,7 @@ template <std::integral T>
   return value;
 }
 [[nodiscard]] const char *string_field(json_object *object, const char *key) noexcept;
+/** Read a JSON boolean, using default_value for null objects, missing keys, or other types. */
 [[nodiscard]] bool boolean_field(json_object *object, const char *key, bool default_value) noexcept;
 [[nodiscard]] std::string string_or_empty(json_object *object, const char *key);
 template <std::integral T>

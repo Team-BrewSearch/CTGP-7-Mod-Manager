@@ -46,15 +46,34 @@ extern u32 frame_counter;
 extern bool ready;
 [[nodiscard]] bool is_wanted(int mod_id) noexcept;
 [[nodiscard]] bool is_resident(int mod_id) noexcept;
+/** Return whether the failure ring contains mod_id; zero is always treated as failed. */
 [[nodiscard]] bool has_failed(int mod_id) noexcept;
+/**
+ * Record a nonzero mod failure, capping its count at THUMB_FAIL_RETRY.
+ * New IDs overwrite the oldest ring slot when full; zero is ignored.
+ */
 void mark_failed(int mod_id) noexcept;
+/**
+ * Remove failure records whose count reached THUMB_FAIL_RETRY, allowing requeueing.
+ * Keep records with lower counts; callers must coordinate access to failure state.
+ */
 void evict_stale_failures() noexcept;
 [[nodiscard]] bool is_in_flight(int mod_id) noexcept;
 [[nodiscard]] TextureSlot *pick_slot() noexcept;
 void rebuild_wanted() noexcept;
 void rebuild_queue() noexcept;
+/**
+ * Produce queued thumbnails using the WorkerContext at argument until quit is requested.
+ * Publish each success or failure and wait for UI acknowledgement before reusing pixels.
+ */
 void worker_main(void *argument);
+/**
+ * Consume thumbnail publications, update textures and failures, and queue visible requests.
+ * Periodically evict failure records at the retry threshold. Call on the render
+ * thread; do nothing until initialized.
+ */
 void tick();
+/** Return whether initialized workers have an unconsumed publication, including failures. */
 [[nodiscard]] bool has_arrivals();
 [[nodiscard]] C3D_Tex *texture_for(int mod_id) noexcept;
 bool init();

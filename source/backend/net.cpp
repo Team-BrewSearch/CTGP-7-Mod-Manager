@@ -49,6 +49,10 @@ namespace {
 std::atomic<const char *> ca_bundle_path{nullptr};
 constexpr std::string_view CERT_BEGIN = "-----BEGIN CERTIFICATE-----";
 constexpr std::string_view CERT_END = "-----END CERTIFICATE-----";
+/**
+ * Check bundle size bounds, PEM markers, and at least ten certificate beginnings.
+ * This is a structural heuristic, not certificate or signature validation.
+ */
 bool plausible_ca_bundle(const std::string &data) noexcept {
   if (data.size() < cfg::CA_BUNDLE_MIN_SIZE || data.size() > cfg::CA_BUNDLE_MAX_SIZE) {
     return false;
@@ -64,11 +68,16 @@ bool plausible_ca_bundle(const std::string &data) noexcept {
   }
   return count >= 10;
 }
+/** Write the 32-byte SHA-256 digest of data; return false if hashing fails. */
 bool compute_sha256(const std::string &data, unsigned char hash[32]) noexcept {
   return mbedtls_sha256_ret(
              reinterpret_cast<const unsigned char *>(data.data()),
              static_cast<std::size_t>(data.size()), hash, 0) == 0;
 }
+/**
+ * Decode exactly 64 case-insensitive hexadecimal digits into 32 bytes.
+ * Return false on invalid input; expected may be partially written.
+ */
 bool parse_sha256_hex(const std::string &hex, unsigned char expected[32]) noexcept {
   if (hex.size() != 64) {
     return false;
@@ -95,6 +104,7 @@ bool parse_sha256_hex(const std::string &hex, unsigned char expected[32]) noexce
   }
   return true;
 }
+/** Return whether data matches a 64-digit SHA-256 digest; hash or parse failure returns false. */
 bool verify_ca_bundle_hash(const std::string &data, const std::string &expected_hex) noexcept {
   unsigned char hash[32];
   if (!compute_sha256(data, hash)) {
@@ -110,6 +120,10 @@ bool verify_ca_bundle_hash(const std::string &data, const std::string &expected_
   }
   return diff == 0;
 }
+/**
+ * Check file size bounds and PEM markers near the beginning and end.
+ * Return false on metadata, open, read, or seek failure; contents are not authenticated.
+ */
 bool plausible_ca_file(const char *path) noexcept {
   const std::optional<int64_t> size = sd::file_size(path);
   if (!size || *size < static_cast<int64_t>(cfg::CA_BUNDLE_MIN_SIZE) ||
@@ -142,6 +156,11 @@ bool plausible_ca_file(const char *path) noexcept {
   return std::search(tail_text.begin(), tail_text.end(), CERT_END.begin(), CERT_END.end()) != tail_text.end();
 }
 bool read_cached_etag(const char *path, int64_t bundle_size, std::string &etag);
+/**
+ * Choose a plausible SD bundle, falling back to ROMFS when neither SD file qualifies.
+ * Prefer the temporary bundle if the permanent one fails the check or cached ETag
+ * metadata matches the temporary size. These checks do not authenticate the files.
+ */
 const char *choose_ca_store() noexcept {
   const bool sd_ok = plausible_ca_file(cfg::CA_BUNDLE_SD.data());
   const bool tmp_ok = plausible_ca_file(cfg::CA_BUNDLE_SD_TMP.data());
@@ -160,6 +179,7 @@ const char *choose_ca_store() noexcept {
   }
   return cfg::CA_BUNDLE_SD.data();
 }
+/** Trim spaces, tabs, carriage returns, and newlines from both ends of the view. */
 void trim_ascii(std::string_view &text) noexcept {
   const auto is_space = [](char value) {
     return value == ' ' || value == '\t' || value == '\r' || value == '\n';
@@ -171,6 +191,10 @@ void trim_ascii(std::string_view &text) noexcept {
     text.remove_suffix(1);
   }
 }
+/**
+ * Read an ETag only when its stored byte count matches bundle_size.
+ * Return false for an unreadable or invalid cache, leaving etag unchanged.
+ */
 bool read_cached_etag(const char *path, int64_t bundle_size, std::string &etag) {
   sys::FileHandle file = sd::open(path, "rb");
   if (!file) {
@@ -204,6 +228,11 @@ bool read_cached_etag(const char *path, int64_t bundle_size, std::string &etag) 
   etag.assign(tag);
   return true;
 }
+/**
+ * Save a bundle byte count and ETag through a temporary file.
+ * Return false on open, write, close, or replacement failure. Flush and sync
+ * results are ignored, so success does not guarantee durability.
+ */
 bool write_cached_etag(int64_t bundle_size, const std::string &etag) {
   const std::string contents = std::to_string(bundle_size) + "\n" + etag + "\n";
   {
@@ -233,6 +262,10 @@ bool write_cached_etag(int64_t bundle_size, const std::string &etag) {
   }
   return true;
 }
+/**
+ * Capture a nonempty, trimmed ETag header in the string at userp, ignoring header case.
+ * Return the number of header bytes consumed, including for unrelated headers.
+ */
 std::size_t capture_etag_header(char *buffer, std::size_t size, std::size_t count,
                                 void *userp) {
   const std::size_t total = size * count;
@@ -302,12 +335,18 @@ void configure(CURL *curl) noexcept {
   }
 }
 namespace {
+/** Return whether an optional cancellation flag is set; null disables cancellation. */
 bool cancelled(const std::atomic<bool> *cancel) noexcept {
   return cancel != nullptr && cancel->load(std::memory_order_acquire);
 }
+/** Return nonzero to abort curl when the optional atomic flag at userp is set. */
 int progress_abort(void *userp, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
   return cancelled(static_cast<const std::atomic<bool> *>(userp)) ? 1 : 0;
 }
+/**
+ * Enable transfer cancellation through cancel, or disable progress checks for null.
+ * The flag must remain valid for transfers that use this configuration.
+ */
 void configure_cancellation(CURL *curl, const std::atomic<bool> *cancel) noexcept {
   if (cancel != nullptr) {
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -317,6 +356,7 @@ void configure_cancellation(CURL *curl, const std::atomic<bool> *cancel) noexcep
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
   }
 }
+/** Wait up to delay_ns nanoseconds, checking cancellation between sleep slices. */
 void sleep_cancellable(u64 delay_ns, const std::atomic<bool> *cancel) noexcept {
   u64 elapsed_ns = 0;
   while (delay_ns > 0) {
@@ -389,6 +429,12 @@ Response get_with_retry(CURL *curl, const std::string &url, int max_attempts,
   return response;
 }
 namespace {
+/**
+ * Fetch a CA resource into body and capture its ETag and HTTP status.
+ * verify controls TLS checks; ca_override optionally selects a different trust
+ * store. Send a conditional request for a nonempty cached_etag. Return curl errors
+ * directly; HTTP failure codes are reported through status, not the return value.
+ */
 CURLcode fetch_ca_bundle(bool verify, const std::string &url,
                          const std::string &cached_etag, std::string &body,
                          std::string &reply_etag, long &status,
@@ -433,6 +479,11 @@ CURLcode fetch_ca_bundle(bool verify, const std::string &url,
   curl_easy_cleanup(curl);
   return outcome;
 }
+/**
+ * Validate bundle shape and an optional SHA-256 digest, then write and select it.
+ * Return true if the permanent or temporary SD file becomes active. Validation
+ * and file failures return false; flush and sync results are ignored.
+ */
 bool install_ca_bundle(const std::string &body, const std::string &expected_hash) {
   if (!plausible_ca_bundle(body)) {
     log_event("CA bundle: downloaded file was rejected");

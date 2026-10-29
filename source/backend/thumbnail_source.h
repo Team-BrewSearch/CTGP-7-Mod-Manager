@@ -31,7 +31,17 @@ void jpeg_silence(j_common_ptr);
   }
   return 8;
 }
+/**
+ * Decode length bytes of JPEG data to scaled RGB pixels within configured size limits.
+ * On success, out owns a malloc buffer that the caller must free. Decode, size, or
+ * allocation failure returns false without updating out; libjpeg errors are caught.
+ */
 [[nodiscard]] bool jpeg_decode(const unsigned char *source, std::size_t length, RawImage &out);
+/**
+ * Encode THUMB_IMG_W by THUMB_IMG_H packed RGB pixels as a thumbnail JPEG.
+ * On success, set the output byte length and a malloc buffer the caller must free.
+ * Return false on encoding or allocation failure without updating the outputs.
+ */
 [[nodiscard]] bool jpeg_encode(unsigned char *rgb, unsigned char **out_buffer,
                                unsigned long *out_length);
 void crop_resize(const RawImage &source, unsigned char *destination) noexcept;
@@ -60,6 +70,13 @@ extern std::atomic<bool> quit_requested;
 std::size_t download_write(void *contents, std::size_t size, std::size_t nmemb, void *userp);
 int download_abort(void *, curl_off_t, curl_off_t, curl_off_t, curl_off_t);
 void configure_download(CURL *curl) noexcept;
+/**
+ * Fill a THUMB_TEX_BYTES destination with a tiled RGB565 thumbnail and flush its cache.
+ * Use a cached JPEG first, deleting an undecodable cache; otherwise download from
+ * a non-null URL with the current CA configuration. Return false on download,
+ * cancellation before/during transfer, decoding, or allocation failure. Cache-save
+ * failure is ignored, and a cached image can be produced even when canceled.
+ */
 [[nodiscard]] bool produce(CURL *curl, int mod_id, const char *url, u16 *destination);
 }
 }

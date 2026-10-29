@@ -9,6 +9,7 @@ namespace mm {
 namespace draw {
 [[nodiscard]] float measure_imgui(const char *content);
 void text_centered(const char *content, const ImVec4 &color, float y);
+/** Display and log content, adding retry and exit hints when failed is true. */
 void bottom_status(const std::string &content, bool failed);
 [[nodiscard]] std::string action_label(model::ModAction action, const store::ModData *mod);
 void wrap_lines(std::string_view content, float wrap_width, int max_lines,
@@ -19,6 +20,10 @@ void wrap_lines(std::string_view content, float wrap_width, int max_lines,
                                   float border);
 void draw_sort_options();
 void draw_progress_bar();
+/**
+ * Draw browsing controls, progress, and feed age, or the active modal overlay.
+ * Handle activated touch controls, including install actions, search, and overlay changes.
+ */
 void bottom_browse();
 }
 }

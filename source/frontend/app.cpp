@@ -48,6 +48,10 @@ bool enter_browse_state() {
   (void)install::init();
   return true;
 }
+/**
+ * Reload a nonempty cached list, retaining the search, sort, and selected mod when present.
+ * Return false without replacing the current list if the cache is unreadable or empty.
+ */
 bool reload_browse_state() {
   const store::ModData *previous = model::selected_mod();
   const int selected_id = previous != nullptr ? previous->id : 0;

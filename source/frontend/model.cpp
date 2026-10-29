@@ -29,6 +29,10 @@ char lower_ascii(char c) noexcept {
   }
   return c;
 }
+/**
+ * Find an already ASCII-lowercased query in text, folding ASCII case in text only.
+ * An empty query matches; non-ASCII bytes are compared unchanged.
+ */
 bool contains_query(const std::string &text, const std::string &query) noexcept {
   if (query.empty()) {
     return true;

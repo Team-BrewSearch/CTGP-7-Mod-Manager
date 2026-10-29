@@ -76,6 +76,7 @@ void configure_download(CURL *curl) noexcept {
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &download_progress);
 }
+/** Return whether a transport, TLS, or partial-transfer error is eligible for retry. */
 bool transient_failure(CURLcode outcome) noexcept {
   switch (outcome) {
     case CURLE_COULDNT_RESOLVE_HOST:
@@ -93,6 +94,11 @@ bool transient_failure(CURLcode outcome) noexcept {
       return false;
   }
 }
+/**
+ * Replace the temporary archive with one download using a configured curl handle.
+ * Return false with a user message on transfer, file, HTTP, or length-check failure.
+ * Set outcome only if a transfer is attempted; partial files can remain on failure.
+ */
 bool download_once(CURL *curl, const std::string &url, std::string &message,
                    CURLcode &outcome) {
   sd::unlink_quietly(cfg::DOWNLOAD_TMP.data());

@@ -9,6 +9,7 @@
 #include <type_traits>
 namespace mm {
 namespace fmt {
+/** Count {} substitutions, skipping doubled braces; unmatched braces are ignored. */
 constexpr std::size_t count_placeholders(std::string_view text) noexcept {
   std::size_t placeholders = 0;
   for (std::size_t i = 0; i + 1 < text.size(); ++i) {
@@ -24,15 +25,18 @@ constexpr std::size_t count_placeholders(std::string_view text) noexcept {
   }
   return placeholders;
 }
+/** Count substitutions in a null-terminated format string during constant evaluation. */
 consteval std::size_t count_placeholders(const char *literal) noexcept {
   return count_placeholders(std::string_view(literal));
 }
+/** Abort if called at runtime; calling this during constant evaluation rejects the format. */
 [[noreturn]] inline void placeholder_count_error() noexcept {
   std::abort();
 }
  template <typename... Args>
  class Spec {
   public:
+   /** Borrow a format literal, rejecting a placeholder count that differs from Args at compile time. */
    template <std::size_t N>
    consteval Spec(const char (&literal)[N]) : text_{literal, N - 1} {
      if (count_placeholders(literal) != sizeof...(Args)) {

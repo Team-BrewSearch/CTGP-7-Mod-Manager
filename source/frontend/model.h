@@ -44,7 +44,15 @@ void sort();
 [[nodiscard]] int visible_count() noexcept;
 [[nodiscard]] bool searching() noexcept;
 void apply_search(const std::string &query);
+/**
+ * Take ownership of a new catalog and rebuild the view using the current search and sort.
+ * Reset the window and selection to the beginning and mark card text dirty.
+ */
 void replace_all(std::vector<ModData> &&fresh);
+/**
+ * Select a mod in the filtered list and scroll it into view, marking card text dirty.
+ * For zero, a missing ID, or an empty list, clamp the current view to valid bounds.
+ */
 void select_mod_id(int mod_id) noexcept;
 void clear_search();
 [[nodiscard]] int max_window_start() noexcept;

@@ -18,10 +18,15 @@ namespace mm {
 namespace feed {
 std::atomic<std::size_t> core_batch_cap{cfg::CORE_BATCH_SIZE};
 std::atomic<bool> quit_requested{false};
+/** Publish the feed status and pass the same text to the event log. */
 void report_status(const std::string &text) {
   status::print("{}", text);
   log_event(text);
 }
+/**
+ * Return whether the cache has the current version and an age in [0, 24 hours).
+ * Missing metadata, an unavailable clock, and future modification times are stale.
+ */
 bool cache_is_fresh() {
   if (!store::mod_list_version_ok()) {
     return false;
