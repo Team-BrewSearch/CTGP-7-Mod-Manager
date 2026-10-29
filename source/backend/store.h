@@ -124,7 +124,8 @@ extern Registry installed;
 /**
  * Clear and load the registry, preferring parseable temporary JSON over the main file.
  * Attempt deletion of files marked uninstalling, erase their records, and save the
- * cleanup; deletion and cleanup-save errors are ignored. Remove the temporary file.
+ * cleanup; deletion and cleanup-save errors are ignored. Attempt to remove the
+ * temporary file.
  * Return true with an empty registry when neither file parses; return false when
  * the chosen JSON is not an object.
  */

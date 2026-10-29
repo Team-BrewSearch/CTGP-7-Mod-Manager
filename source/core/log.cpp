@@ -10,7 +10,7 @@ namespace {
 sys::Mutex log_mutex;
 sys::FileHandle logfile;
 std::string last_text;
-/** Return a UTC timestamp, or an empty string if the clock or formatting fails. */
+/** Format the current time as UTC; return an empty string if it is nonpositive or formatting fails. */
 std::string timestamp() noexcept {
   const std::time_t now = std::time(nullptr);
   if (now <= 0) {

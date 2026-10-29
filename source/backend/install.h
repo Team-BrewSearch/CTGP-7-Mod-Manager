@@ -93,7 +93,8 @@ void apply(const Result &result);
 /**
  * Advance uninstall work and consume a completed install result on the UI thread.
  * Apply successful extractions or expose their failure message. Return whether
- * uninstall progress changed or a result was consumed; false if not initialized.
+ * the uninstall percentage changed, uninstall completed, or a result was consumed;
+ * false if not initialized.
  */
 [[nodiscard]] bool tick();
 [[nodiscard]] std::string progress_label();
@@ -111,8 +112,9 @@ void cancel_uninstall_pending();
 void begin_uninstall(const std::vector<std::string> &files, int mod_id);
 /**
  * Attempt one batch of file removals and update uninstall progress.
- * On completion, erase the registry entry and attempt to save it. Removal and save
- * errors are ignored. Return whether progress changed or uninstall completed.
+ * On completion, erase the entry for a nonzero mod ID and attempt to save the
+ * registry. Removal and save errors are ignored. Return whether the percentage
+ * changed or uninstall completed.
  */
 [[nodiscard]] bool tick_uninstall();
 bool init();

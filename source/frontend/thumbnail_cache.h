@@ -50,7 +50,7 @@ extern bool ready;
 [[nodiscard]] bool has_failed(int mod_id) noexcept;
 /**
  * Record a nonzero mod failure, capping its count at THUMB_FAIL_RETRY.
- * New IDs overwrite the oldest ring slot when full; zero is ignored.
+ * New IDs use the next ring slot, overwriting its contents when full; zero is ignored.
  */
 void mark_failed(int mod_id) noexcept;
 /**

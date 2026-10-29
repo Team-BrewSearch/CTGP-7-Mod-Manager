@@ -50,8 +50,9 @@ void drain_pages(std::vector<PageResult> &results, std::vector<ModData> &out);
 [[nodiscard]] std::vector<PageJob> plan_remaining_pages(const std::vector<PageResult> &first_pass);
 /**
  * Fetch, deduplicate, enrich, and save the mod list, excluding configured categories.
- * Return false on cancellation, no initial records, or a failed save. Individual
- * request failures can still yield a successful, partially resolved list.
+ * Return false if cancellation is detected before or during fetching, no initial
+ * records are found, or saving fails. Individual request failures can still yield a
+ * successful, partially resolved list.
  */
 [[nodiscard]] bool run_pipeline();
 /**
