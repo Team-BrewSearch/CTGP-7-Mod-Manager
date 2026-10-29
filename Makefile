@@ -31,9 +31,10 @@ APP_AUTHOR	:= NitroShell and Contributors
 
 TARGET		:= CTGP-7-Mod-Manager
 BUILD		:= build
-SOURCES		:= source source/core source/backend source/frontend imgui/imgui
-INCLUDES	:= source imgui
+SOURCES		:= source source/core source/backend source/frontend libs/imgui
+INCLUDES	:= source libs/imgui
 ROMFS		:= romfs
+OPENDSP		:= $(TOPDIR)/libs/opendsp/library
 
 #---------------------------------------------------------------------------------
 # Options for code generation
@@ -48,8 +49,8 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++20 -Wno-psabi
 ASFLAGS		:= -g $(ARCH)
 LDFLAGS		:= -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--gc-sections -Wl,-z,noexecstack
 
-LIBS	:= -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -ljson-c -larchive -lbz2 -llzma -lzstd -ljpeg -lz -lcitro2d -lcitro3d -lctru -lm -lvorbisidec -logg
-LIBDIRS	:= $(PORTLIBS) $(CTRULIB)
+LIBS	:= -lopendsp -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -ljson-c -larchive -lbz2 -llzma -lzstd -ljpeg -lz -lcitro2d -lcitro3d -lctru -lm -lvorbisidec -logg
+LIBDIRS	:= $(OPENDSP) $(PORTLIBS) $(CTRULIB)
 
 imgui_sw.o : CXXFLAGS += -Wno-unused-variable -Wno-unused-parameter -Wno-unused-function
 
@@ -107,6 +108,12 @@ endif
 .PHONY: all clean
 
 all: $(BUILD) $(DEPSDIR)
+	@# Regenerate dependencies and objects that still reference the old ImGui layout.
+	@for dep in $(wildcard $(DEPSDIR)/*.d); do \
+		if grep -q 'imgui/imgui/' "$$dep"; then \
+			rm -f "$$dep" "$${dep%.d}.o"; \
+		fi; \
+	done
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 $(BUILD):
@@ -121,6 +128,7 @@ clean:
 	@echo clean ...
 	@rm -fr $(BUILD) $(TARGET).3dsx $(OUTPUT).smdh $(TARGET).elf $(OUTPUT).cia $(DEPSDIR)
 	@rm -f app/banner.bin app/icon.bin
+	@$(MAKE) --no-print-directory -C $(OPENDSP) clean
 
 else
 
@@ -130,11 +138,17 @@ all: $(OUTPUT).3dsx $(OUTPUT).cia
 
 $(OUTPUT).3dsx	: $(OUTPUT).elf $(_3DSXDEPS)
 $(OFILES_SOURCES) : $(HFILES)
-$(OUTPUT).elf	: $(OFILES)
+$(OUTPUT).elf	: $(OFILES) $(OPENDSP)/lib/libopendsp.a
+
+$(OPENDSP)/lib/libopendsp.a: FORCE
+	@$(MAKE) --no-print-directory -C $(OPENDSP)
+
+.PHONY: FORCE
+FORCE:
 
 $(OUTPUT).cia	: $(OUTPUT).elf $(OUTPUT).smdh
-	@$(BANNERTOOL) makebanner -ci "../app/banner.cgfx" -a "../app/audio.wav" -o "../app/banner.bin"
-	@$(BANNERTOOL) makesmdh -i "../app/icon.png" -s "$(TARGET)" -l "$(APP_TITLE)" -p "$(APP_AUTHOR)" -o "../app/icon.bin" \
+	@$(BANNERTOOL) makebanner -ci "../$(BNR_IMAGE)" -a "../$(BNR_AUDIO)" -o "../app/banner.bin"
+	@$(BANNERTOOL) makesmdh -i "../$(ICON)" -s "$(TARGET)" -l "$(APP_TITLE)" -p "$(APP_AUTHOR)" -o "../app/icon.bin" \
 		--flags visible,ratingrequired --cero 153 --esrb 153 --usk 153 --pegigen 153 --pegiptr 153 --pegibbfc 153 --cob 153 --grb 153 --cgsrr 153
 	@$(MAKEROM) -f cia -target t -exefslogo -o "$(OUTPUT).cia" -elf "$(OUTPUT).elf" -rsf "../app/build-cia.rsf" -banner "../app/banner.bin" -icon "../app/icon.bin" -DAPP_ROMFS=".."
 

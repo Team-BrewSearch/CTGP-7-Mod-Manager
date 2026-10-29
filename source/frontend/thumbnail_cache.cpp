@@ -1,20 +1,15 @@
 #include "frontend/thumbnail_cache.h"
-
 #include "backend/sd_card.h"
 #include "backend/store.h"
 #include "backend/thumbnail_source.h"
 #include "frontend/model.h"
-
 #include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
-
 namespace mm {
 namespace thumbs {
-
 Tex3DS_SubTexture sub_texture{};
-
 void build_sub_texture() noexcept {
   const float scale_x = cfg::CONTENT_W / static_cast<float>(cfg::THUMB_IMG_W);
   const float scale_y = cfg::THUMB_H / static_cast<float>(cfg::THUMB_IMG_H);
@@ -34,7 +29,6 @@ void build_sub_texture() noexcept {
   sub_texture.top = 1.0f - origin_y / static_cast<float>(cfg::THUMB_TEX_H);
   sub_texture.bottom = 1.0f - (origin_y + visible_h) / static_cast<float>(cfg::THUMB_TEX_H);
 }
-
 sys::Mutex lock;
 sys::Event wake{true};
 std::array<TextureSlot, cfg::THUMB_SLOTS> slots;
@@ -45,48 +39,62 @@ std::array<Request, cfg::THUMB_QUEUE> queue;
 int queue_head = 0;
 int queue_size = 0;
 std::array<int, cfg::THUMB_WORKERS> in_flight{};
-std::array<int, cfg::THUMB_FAIL_RING> failures{};
+std::array<std::pair<int, int>, cfg::THUMB_FAIL_RING> failures{};
 int failure_cursor = 0;
 int failure_count = 0;
 std::array<int, cfg::CARDS_PER_PAGE> wanted{};
 int wanted_count = 0;
 u32 frame_counter = 0;
 bool ready = false;
-
 bool is_wanted(int mod_id) noexcept {
   return std::ranges::find(wanted.begin(), wanted.begin() + wanted_count, mod_id) !=
          wanted.begin() + wanted_count;
 }
-
 bool is_resident(int mod_id) noexcept {
   return std::ranges::any_of(slots, [mod_id](const TextureSlot &slot) {
     return slot.mod_id == mod_id;
   });
 }
-
 bool has_failed(int mod_id) noexcept {
   if (mod_id == 0) return true;
   for (int i = 0; i < failure_count; ++i) {
-    if (failures[i] == mod_id) return true;
+    if (failures[i].first == mod_id) {
+      return failures[i].second >= cfg::THUMB_FAIL_RETRY;
+    }
   }
   return false;
 }
-
 void mark_failed(int mod_id) noexcept {
-  if (mod_id == 0 || has_failed(mod_id)) {
+  if (mod_id == 0) {
     return;
   }
-  failures[static_cast<std::size_t>(failure_cursor)] = mod_id;
+  for (int i = 0; i < failure_count; ++i) {
+    if (failures[i].first == mod_id) {
+      failures[i].second = std::min(failures[i].second + 1, cfg::THUMB_FAIL_RETRY);
+      return;
+    }
+  }
+  failures[static_cast<std::size_t>(failure_cursor)] = {mod_id, 1};
   failure_cursor = (failure_cursor + 1) % cfg::THUMB_FAIL_RING;
   if (failure_count < cfg::THUMB_FAIL_RING) {
     ++failure_count;
   }
 }
-
+void evict_stale_failures() noexcept {
+  int write = 0;
+  for (int read = 0; read < failure_count; ++read) {
+    if (failures[static_cast<std::size_t>(read)].second >= cfg::THUMB_FAIL_RETRY) {
+      continue;
+    }
+    failures[static_cast<std::size_t>(write)] = failures[static_cast<std::size_t>(read)];
+    ++write;
+  }
+  failure_count = write;
+  failure_cursor = write % cfg::THUMB_FAIL_RING;
+}
 bool is_in_flight(int mod_id) noexcept {
   return std::ranges::find(in_flight, mod_id) != in_flight.end();
 }
-
 TextureSlot *pick_slot() noexcept {
   for (TextureSlot &slot : slots) {
     if (slot.mod_id == 0) {
@@ -104,7 +112,6 @@ TextureSlot *pick_slot() noexcept {
   }
   return best;
 }
-
 void rebuild_wanted() noexcept {
   wanted_count = 0;
   const int visible = model::visible_count();
@@ -116,7 +123,6 @@ void rebuild_wanted() noexcept {
     }
   }
 }
-
 void rebuild_queue() noexcept {
   queue_head = 0;
   queue_size = 0;
@@ -139,14 +145,10 @@ void rebuild_queue() noexcept {
     std::ranges::copy(mod.thumbnail_url, request.url.begin());
   }
 }
-
 void worker_main(void *argument) {
   const int index = static_cast<WorkerContext *>(argument)->index;
   Publication &publication = publications[static_cast<std::size_t>(index)];
   sys::CurlHandle curl;
-  if (curl) {
-    configure_download(curl.get());
-  }
   for (;;) {
     wake.clear();
     Request request;
@@ -197,12 +199,14 @@ void worker_main(void *argument) {
   const std::scoped_lock guard{lock};
   in_flight[static_cast<std::size_t>(index)] = 0;
 }
-
 void tick() {
   if (!ready) {
     return;
   }
   ++frame_counter;
+  if ((frame_counter % cfg::THUMB_FAIL_EVICT_TICKS) == 0) {
+    evict_stale_failures();
+  }
   bool have_work = false;
   {
     const std::scoped_lock guard{lock};
@@ -232,7 +236,15 @@ void tick() {
     wake.signal();
   }
 }
-
+bool has_arrivals() {
+  if (!ready) {
+    return false;
+  }
+  const std::scoped_lock guard{lock};
+  return std::ranges::any_of(publications, [](const Publication &publication) {
+    return publication.ready;
+  });
+}
 C3D_Tex *texture_for(int mod_id) noexcept {
   if (!ready || mod_id == 0) {
     return nullptr;
@@ -246,7 +258,6 @@ C3D_Tex *texture_for(int mod_id) noexcept {
   }
   return nullptr;
 }
-
 bool init() {
   if (ready) {
     return true;
@@ -301,7 +312,6 @@ bool init() {
   }
   return true;
 }
-
 void shutdown() {
   if (!ready) {
     return;
@@ -323,6 +333,5 @@ void shutdown() {
     slot.mod_id = 0;
   }
 }
-
-}  // namespace thumbs
-}  // namespace mm
+}
+}

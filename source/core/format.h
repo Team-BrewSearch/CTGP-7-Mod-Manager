@@ -1,75 +1,74 @@
 #pragma once
-
 #include <array>
 #include <charconv>
 #include <concepts>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <type_traits>
-
 namespace mm {
 namespace fmt {
-
-inline void trigger_format_mismatch_error() {}
-
-template <typename... Args>
-class Spec {
- public:
-  template <std::size_t N>
-  consteval Spec(const char (&literal)[N]) : text_{literal, N - 1} {
-    std::size_t placeholders = 0;
-    for (std::size_t i = 0; i + 1 < N - 1;) {
-      const bool doubled = literal[i] == literal[i + 1];
-      if ((literal[i] == '{' || literal[i] == '}') && doubled) {
-        i += 2;
-        continue;
-      }
-      if (literal[i] == '{' && literal[i + 1] == '}') {
-        ++placeholders;
-        i += 2;
-        continue;
-      }
+/** Count {} substitutions, skipping doubled braces; unmatched braces are ignored. */
+constexpr std::size_t count_placeholders(std::string_view text) noexcept {
+  std::size_t placeholders = 0;
+  for (std::size_t i = 0; i + 1 < text.size(); ++i) {
+    if (text[i] == '{' && text[i + 1] == '}') {
+      ++placeholders;
       ++i;
+      continue;
     }
-    if (placeholders != sizeof...(Args)) {
-      trigger_format_mismatch_error();
+    if ((text[i] == '{' || text[i] == '}') && text[i + 1] == text[i]) {
+      ++i;
+      continue;
     }
   }
-
+  return placeholders;
+}
+/** Count substitutions in a null-terminated format string during constant evaluation. */
+consteval std::size_t count_placeholders(const char *literal) noexcept {
+  return count_placeholders(std::string_view(literal));
+}
+/** Abort if called at runtime; calling this during constant evaluation rejects the format. */
+[[noreturn]] inline void placeholder_count_error() noexcept {
+  std::abort();
+}
+ template <typename... Args>
+ class Spec {
+  public:
+   /** Borrow a format literal, rejecting a placeholder count that differs from Args at compile time. */
+   template <std::size_t N>
+   consteval Spec(const char (&literal)[N]) : text_{literal, N - 1} {
+     if (count_placeholders(literal) != sizeof...(Args)) {
+       placeholder_count_error();
+     }
+   }
   [[nodiscard]] constexpr std::string_view view() const noexcept {
     return text_;
   }
-
  private:
   std::string_view text_;
 };
-
 inline void append(std::string &out, std::string_view value) {
   out.append(value);
 }
-
 inline void append(std::string &out, const std::string &value) {
   out.append(value);
 }
-
 inline void append(std::string &out, char value) {
   out.push_back(value);
 }
-
 inline void append(std::string &out, const char *value) {
   if (value != nullptr) {
     out.append(value);
   }
 }
-
 template <std::integral T>
 void append(std::string &out, T value) {
   std::array<char, 24> digits{};
   const auto result = std::to_chars(digits.data(), digits.data() + digits.size(), value);
   out.append(digits.data(), result.ptr);
 }
-
 template <typename... Args>
 [[nodiscard]] std::string format(Spec<std::type_identity_t<Args>...> spec, const Args &...args) {
   const std::string_view text = spec.view();
@@ -98,6 +97,5 @@ template <typename... Args>
   (void)copy_to_placeholder();
   return out;
 }
-
-}  // namespace fmt
-}  // namespace mm
+}
+}

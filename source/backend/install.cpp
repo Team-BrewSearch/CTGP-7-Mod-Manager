@@ -1,21 +1,21 @@
 #include "backend/install.h"
-
 #include "backend/install_archive.h"
 #include "backend/net.h"
 #include "backend/sd_card.h"
 #include "core/config.h"
 #include "core/format.h"
+#include "core/log.h"
 #include "core/status.h"
 #include "frontend/model.h"
-
 #include <algorithm>
 #include <limits>
 #include <mutex>
 #include <utility>
-
 namespace mm {
 namespace install {
-
+namespace {
+std::vector<Request> queued_requests;
+}
 std::atomic<bool> quit_requested{false};
 std::atomic<bool> cancel_requested{false};
 std::atomic<int> percent{-1};
@@ -26,13 +26,10 @@ std::atomic<int> uninstall_done{0};
 std::atomic<bool> uninstalling{false};
 std::atomic<int> uninstall_mod_id{0};
 std::atomic<bool> uninstall_pending{false};
-std::vector<Request> queued_requests;
-
 bool aborting() noexcept {
   return quit_requested.load(std::memory_order_acquire) ||
          cancel_requested.load(std::memory_order_acquire);
 }
-
 std::size_t download_write(void *contents, std::size_t size, std::size_t nmemb, void *userp) {
   auto *sink = static_cast<DownloadSink *>(userp);
   std::size_t total = 0;
@@ -54,7 +51,6 @@ std::size_t download_write(void *contents, std::size_t size, std::size_t nmemb, 
   sink->written += static_cast<curl_off_t>(total);
   return total;
 }
-
 int download_progress(void *, curl_off_t download_total, curl_off_t download_now,
                       curl_off_t, curl_off_t) {
   if (aborting()) {
@@ -67,7 +63,6 @@ int download_progress(void *, curl_off_t download_total, curl_off_t download_now
   bytes_done.store(static_cast<int64_t>(download_now), std::memory_order_release);
   return 0;
 }
-
 void configure_download(CURL *curl) noexcept {
   net::configure(curl);
   curl_easy_setopt(curl, CURLOPT_SHARE, nullptr);
@@ -81,8 +76,31 @@ void configure_download(CURL *curl) noexcept {
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &download_progress);
 }
-
-bool download(CURL *curl, const std::string &url, std::string &message) {
+/** Return whether a transport, TLS, or partial-transfer error is eligible for retry. */
+bool transient_failure(CURLcode outcome) noexcept {
+  switch (outcome) {
+    case CURLE_COULDNT_RESOLVE_HOST:
+    case CURLE_COULDNT_CONNECT:
+    case CURLE_OPERATION_TIMEDOUT:
+    case CURLE_SSL_CONNECT_ERROR:
+    case CURLE_PEER_FAILED_VERIFICATION:
+    case CURLE_SSL_CACERT_BADFILE:
+    case CURLE_PARTIAL_FILE:
+    case CURLE_RECV_ERROR:
+    case CURLE_SEND_ERROR:
+    case CURLE_GOT_NOTHING:
+      return true;
+    default:
+      return false;
+  }
+}
+/**
+ * Replace the temporary archive with one download using a configured curl handle.
+ * Return false with a user message on transfer, file, HTTP, or length-check failure.
+ * Set outcome only if a transfer is attempted; partial files can remain on failure.
+ */
+bool download_once(CURL *curl, const std::string &url, std::string &message,
+                   CURLcode &outcome) {
   sd::unlink_quietly(cfg::DOWNLOAD_TMP.data());
   sys::FileHandle file = sd::open(cfg::DOWNLOAD_TMP.data(), "wb");
   if (!file) {
@@ -93,7 +111,7 @@ bool download(CURL *curl, const std::string &url, std::string &message) {
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
   curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
-  const CURLcode outcome = curl_easy_perform(curl);
+  outcome = curl_easy_perform(curl);
   const bool closed = file.close();
   if (outcome != CURLE_OK) {
     switch (outcome) {
@@ -134,7 +152,27 @@ bool download(CURL *curl, const std::string &url, std::string &message) {
   }
   return true;
 }
-
+bool download(CURL *curl, const std::string &url, std::string &message) {
+  for (int attempt = 0; attempt < cfg::DOWNLOAD_ATTEMPTS; ++attempt) {
+    if (aborting()) {
+      message = "Cancelled.";
+      return false;
+    }
+    configure_download(curl);
+    CURLcode outcome = CURLE_OK;
+    if (download_once(curl, url, message, outcome)) {
+      return true;
+    }
+    if (aborting() || !transient_failure(outcome)) {
+      return false;
+    }
+    if (attempt + 1 < cfg::DOWNLOAD_ATTEMPTS) {
+      log_event(fmt::format("Download: retrying after {}", curl_easy_strerror(outcome)));
+      svcSleepThread(cfg::RETRY_BASE_DELAY_NS << attempt);
+    }
+  }
+  return false;
+}
 sys::Mutex mailbox_lock;
 sys::Event wake{true};
 sys::Thread worker;
@@ -144,7 +182,6 @@ Result finished;
 std::atomic<Phase> phase{Phase::IDLE};
 bool ready = false;
 std::string user_message;
-
 bool busy() {
   if (!ready) {
     return false;
@@ -152,7 +189,6 @@ bool busy() {
   const std::scoped_lock guard{mailbox_lock};
   return (slot == Slot::REQUESTED || slot == Slot::RUNNING) || uninstalling.load(std::memory_order_acquire);
 }
-
 bool installing(int mod_id) noexcept {
   if (!ready) {
     return false;
@@ -161,15 +197,12 @@ bool installing(int mod_id) noexcept {
   return (slot == Slot::REQUESTED || slot == Slot::RUNNING) &&
          pending.mod_id == mod_id;
 }
-
 bool is_uninstalling() noexcept {
   return uninstalling.load(std::memory_order_acquire);
 }
-
 bool is_uninstall_pending() noexcept {
   return uninstall_pending.load(std::memory_order_acquire);
 }
-
 void request_uninstall() {
   if (busy() || is_uninstalling() || is_uninstall_pending()) {
     return;
@@ -183,7 +216,6 @@ void request_uninstall() {
   }
   uninstall_pending.store(true, std::memory_order_release);
 }
-
 void confirm_uninstall() {
   uninstall_pending.store(false, std::memory_order_release);
   if (busy() || is_uninstalling()) {
@@ -193,18 +225,25 @@ void confirm_uninstall() {
   if (mod == nullptr) {
     return;
   }
-  const store::InstallRecord *record = store::installed.find(mod->id);
+  const int mod_id = mod->id;
+  store::InstallRecord *record = store::installed.find(mod_id);
   if (record == nullptr) {
     return;
   }
-  const int mod_id = mod->id;
-  std::vector<std::string> files = record->files;
-  store::installed.erase(mod_id);
+  const std::vector<std::string> files = record->files;
+  record->uninstalling = true;
   if (!store::save_installed()) {
+    record->uninstalling = false;
     status::print("Warning: could not save installed mods list.");
+    return;
   }
   model::resort_after_change();
   if (files.empty()) {
+    store::installed.erase(mod_id);
+    if (!store::save_installed()) {
+      status::print("Warning: could not save installed mods list.");
+    }
+    model::resort_after_change();
     user_message.clear();
     return;
   }
@@ -212,21 +251,18 @@ void confirm_uninstall() {
   percent.store(0, std::memory_order_release);
   user_message.clear();
 }
-
 void cancel_uninstall_pending() {
   uninstall_pending.store(false, std::memory_order_release);
 }
-
 void begin_uninstall(const std::vector<std::string> &files, int mod_id) {
   uninstall_files = files;
   uninstall_done.store(0, std::memory_order_release);
   uninstalling.store(true, std::memory_order_release);
   uninstall_mod_id.store(mod_id, std::memory_order_release);
 }
-
-void tick_uninstall() {
+bool tick_uninstall() {
   if (!uninstalling.load(std::memory_order_acquire)) {
-    return;
+    return false;
   }
   const int total = static_cast<int>(uninstall_files.size());
   const int done = uninstall_done.load(std::memory_order_acquire);
@@ -237,26 +273,30 @@ void tick_uninstall() {
     sd::unlink_quietly(path.c_str());
   }
   const int new_done = std::min(done + batch, total);
+  const int previous_percent = percent.load(std::memory_order_acquire);
+  const int new_percent = total > 0 ? (new_done * 100 / total) : 0;
   uninstall_done.store(new_done, std::memory_order_release);
-  percent.store(total > 0 ? (new_done * 100 / total) : 0, std::memory_order_release);
+  percent.store(new_percent, std::memory_order_release);
   if (new_done >= total) {
+    const int mod_id = uninstall_mod_id.load(std::memory_order_acquire);
+    if (mod_id != 0) {
+      store::installed.erase(mod_id);
+      (void)store::save_installed();
+    }
     uninstalling.store(false, std::memory_order_release);
     percent.store(-1, std::memory_order_release);
     user_message.clear();
+    return true;
   }
+  return new_percent != previous_percent;
 }
-
 void cancel() {
   if (busy()) {
     cancel_requested.store(true, std::memory_order_release);
   }
 }
-
 void worker_main(void *) {
   sys::CurlHandle curl;
-  if (curl) {
-    configure_download(curl.get());
-  }
   for (;;) {
     wake.clear();
     Request request;
@@ -316,7 +356,6 @@ void worker_main(void *) {
     }
   }
 }
-
 bool begin(const store::ModData &mod) {
   if (!ready || busy()) {
     return false;
@@ -354,7 +393,6 @@ bool begin(const store::ModData &mod) {
   }
   return accepted;
 }
-
 bool queue_mod(const store::ModData &mod) {
   if (!ready) {
     return false;
@@ -400,7 +438,6 @@ bool queue_mod(const store::ModData &mod) {
   }
   return accepted;
 }
-
 bool queue_selected_mod() {
   const store::ModData *mod = model::selected_mod();
   if (mod == nullptr || model::queued(mod->id)) {
@@ -409,20 +446,12 @@ bool queue_selected_mod() {
   model::queue_selected();
   return queue_mod(*mod);
 }
-
 void apply(const Result &result) {
-  if (const store::InstallRecord *previous = store::installed.find(result.mod_id)) {
-    for (const std::string &old_file : previous->files) {
-      const bool still_supplied = std::ranges::any_of(
-          result.files, [&old_file](const std::string &current) {
-            return equals_ci(old_file, current);
-          });
-      if (still_supplied) {
-        continue;
-      }
-      const std::string path = fmt::format("{}{}", cfg::CTGP7_DIR, old_file);
-      sd::unlink_quietly(path.c_str());
-    }
+  std::optional<store::InstallRecord> previous;
+  std::vector<std::string> old_files;
+  if (const store::InstallRecord *found = store::installed.find(result.mod_id)) {
+    previous = *found;
+    old_files = found->files;
   }
   store::InstallRecord record;
   record.date = result.file_date;
@@ -430,16 +459,33 @@ void apply(const Result &result) {
   record.source_file_name = result.source_name;
   store::installed.insert_or_assign(result.mod_id, std::move(record));
   if (!store::save_installed()) {
+    if (previous.has_value()) {
+      store::installed.insert_or_assign(result.mod_id, *previous);
+    } else {
+      store::installed.erase(result.mod_id);
+    }
     status::print("Warning: could not save installed mods list.");
+    model::resort_after_change();
+    return;
+  }
+  for (const std::string &old_file : old_files) {
+    const bool still_supplied = std::ranges::any_of(
+        result.files, [&old_file](const std::string &current) {
+          return equals_ci(old_file, current);
+        });
+    if (still_supplied) {
+      continue;
+    }
+    const std::string path = fmt::format("{}{}", cfg::CTGP7_DIR, old_file);
+    sd::unlink_quietly(path.c_str());
   }
   model::resort_after_change();
 }
-
-void tick() {
+bool tick() {
   if (!ready) {
-    return;
+    return false;
   }
-  tick_uninstall();
+  bool changed = tick_uninstall();
   Result result;
   bool have = false;
   {
@@ -452,7 +498,7 @@ void tick() {
     }
   }
   if (!have) {
-    return;
+    return changed;
   }
   phase.store(Phase::IDLE, std::memory_order_release);
   cancel_requested.store(false, std::memory_order_release);
@@ -460,11 +506,11 @@ void tick() {
   if (result.ok) {
     apply(result);
     user_message.clear();
-    return;
+    return true;
   }
   user_message = result.message.empty() ? "Install failed." : std::move(result.message);
+  return true;
 }
-
 std::string progress_label() {
   if (is_uninstalling()) {
     const int done = uninstall_done.load(std::memory_order_acquire);
@@ -502,7 +548,6 @@ std::string progress_label() {
   }
   return fmt::format("Downloading {} KB", kilobytes);
 }
-
 void do_action() {
   if (busy() || is_uninstalling()) {
     return;
@@ -534,11 +579,9 @@ void do_action() {
     (void)begin(*mod);
   }
 }
-
 void uninstall() {
   request_uninstall();
 }
-
 bool init() {
   if (ready) {
     return true;
@@ -555,7 +598,6 @@ bool init() {
   ready = true;
   return true;
 }
-
 void shutdown() {
   if (!ready) {
     return;
@@ -567,6 +609,5 @@ void shutdown() {
   uninstalling.store(false, std::memory_order_release);
   sd::unlink_quietly(cfg::DOWNLOAD_TMP.data());
 }
-
-}  // namespace install
-}  // namespace mm
+}
+}

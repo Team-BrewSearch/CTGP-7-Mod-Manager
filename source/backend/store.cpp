@@ -1,23 +1,30 @@
 #include "backend/store.h"
-
 #include "backend/json.h"
 #include "backend/sd_card.h"
 #include "core/config.h"
 #include "core/format.h"
+#include "core/log.h"
 #include "core/system.h"
-
+#include <array>
+#include <cstdio>
+#include <string>
 #include <string_view>
-
+#include <vector>
 namespace mm {
 namespace store {
-
 Registry installed;
-
 bool write_mod_list(const char *path, const std::vector<ModData> &mods) {
   sys::JsonRef array{json_object_new_array()};
   if (!array) {
     return false;
   }
+  sys::JsonRef header{json_object_new_object()};
+  if (!header ||
+      !js::add_field(header.get(), "CacheVersion", json_object_new_int(cfg::MOD_LIST_VERSION)) ||
+      json_object_array_add(array.get(), header.get()) != 0) {
+    return false;
+  }
+  (void)header.release();
   for (const ModData &mod : mods) {
     sys::JsonRef entry{json_object_new_object()};
     if (!entry) {
@@ -43,9 +50,19 @@ bool write_mod_list(const char *path, const std::vector<ModData> &mods) {
     }
     (void)entry.release();
   }
-  return js::write_file(path, array.get());
+  const std::string temporary = std::string(path) + ".tmp";
+  if (!js::write_file(temporary.c_str(), array.get())) {
+    sd::unlink_quietly(temporary.c_str());
+    log_event("Mod list: temporary write failed");
+    return false;
+  }
+  if (!sd::replace_file(temporary.c_str(), path)) {
+    sd::unlink_quietly(temporary.c_str());
+    log_event("Mod list: replace failed");
+    return false;
+  }
+  return true;
 }
-
 bool read_mod_list(const char *path, std::vector<ModData> &out) {
   out.clear();
   const sys::JsonRef root = js::read_file(path);
@@ -73,7 +90,44 @@ bool read_mod_list(const char *path, std::vector<ModData> &out) {
   }
   return true;
 }
-
+bool mod_list_version_ok() {
+  sys::FileHandle file = sd::open(cfg::MOD_LIST_FILE.data(), "rb");
+  if (!file) {
+    return false;
+  }
+  std::array<char, 128> head{};
+  const std::size_t read = std::fread(head.data(), 1, head.size(), file.get());
+  const std::string_view text{head.data(), read};
+  const std::size_t key = text.find("\"CacheVersion\"");
+  if (key == std::string_view::npos) {
+    return false;
+  }
+  std::size_t at = key + std::string_view{"\"CacheVersion\""}.size();
+  const auto skip_space = [&text](std::size_t &pos) {
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t' ||
+                                 text[pos] == '\r' || text[pos] == '\n')) {
+      ++pos;
+    }
+  };
+  skip_space(at);
+  if (at >= text.size() || text[at] != ':') {
+    return false;
+  }
+  ++at;
+  skip_space(at);
+  int version = 0;
+  const std::size_t digits = at;
+  while (at < text.size() && text[at] >= '0' && text[at] <= '9') {
+    version = version * 10 + (text[at] - '0');
+    ++at;
+  }
+  if (at == digits) {
+    return false;
+  }
+  skip_space(at);
+  return version == cfg::MOD_LIST_VERSION && at < text.size() &&
+         (text[at] == ',' || text[at] == '}');
+}
 bool load_installed() {
   installed.clear();
   sys::JsonRef root = js::read_file(cfg::INSTALLED_TMP.data());
@@ -99,6 +153,7 @@ bool load_installed() {
     InstallRecord record;
     record.date = js::integer_field<int64_t>(value, "Date");
     record.source_file_name = js::string_or_empty(value, "SourceFileName");
+    record.uninstalling = js::boolean_field(value, "Uninstalling", false);
     for (json_object *file : js::array_field(value, "Files")) {
       if (!js::is(file, json_type_string)) {
         continue;
@@ -111,9 +166,24 @@ bool load_installed() {
     installed.insert_or_assign(*id, std::move(record));
   }
   sd::unlink_quietly(cfg::INSTALLED_TMP.data());
+  std::vector<int> erased;
+  for (Registry::Entry &entry : installed.entries()) {
+    if (!entry.record.uninstalling) {
+      continue;
+    }
+    for (const std::string &file : entry.record.files) {
+      sd::unlink_quietly(fmt::format("{}{}", cfg::CTGP7_DIR, file).c_str());
+    }
+    erased.push_back(entry.id);
+  }
+  for (const int id : erased) {
+    installed.erase(id);
+  }
+  if (!erased.empty() && !save_installed()) {
+    return false;
+  }
   return true;
 }
-
 bool save_installed() {
   sys::JsonRef root{json_object_new_object()};
   if (!root) {
@@ -141,7 +211,9 @@ bool save_installed() {
     if (!js::add_field(record.get(), "Date",
                        json_object_new_int64(entry.record.date)) ||
         !js::add_field(record.get(), "SourceFileName",
-                       json_object_new_string(entry.record.source_file_name.c_str()))) {
+                       json_object_new_string(entry.record.source_file_name.c_str())) ||
+        !js::add_field(record.get(), "Uninstalling",
+                       json_object_new_boolean(entry.record.uninstalling))) {
       return false;
     }
     const std::string key = fmt::format("{}", entry.id);
@@ -157,11 +229,11 @@ bool save_installed() {
     return false;
   }
   if (!sd::replace_file(tmp.c_str(), permanent.c_str())) {
+    sd::unlink_quietly(tmp.c_str());
     return false;
   }
   sd::unlink_quietly(tmp.c_str());
   return true;
 }
-
-}  // namespace store
-}  // namespace mm
+}
+}

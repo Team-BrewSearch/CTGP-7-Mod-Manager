@@ -1,21 +1,14 @@
 #include "backend/sd_card.h"
-
 #include "core/config.h"
 #include "core/status.h"
-
 #include <sys/stat.h>
 #include <unistd.h>
-
 #include <cerrno>
 #include <cstdio>
 #include <utility>
-#include <vector>
-
 namespace mm {
 namespace sd {
-
 sys::RecursiveMutex path_lock;
-
 std::string join(std::string_view directory, std::string_view name) {
   std::string out;
   out.reserve(directory.size() + name.size() + 1);
@@ -26,65 +19,6 @@ std::string join(std::string_view directory, std::string_view name) {
   out.append(name);
   return out;
 }
-
-bool remove_tree(std::string_view root) {
-  const PathGuard guard{path_lock};
-  std::string normalized{root};
-  if (!normalized.empty() && normalized.back() == '/') {
-    normalized.pop_back();
-  }
-  std::vector<std::string> pending;
-  pending.emplace_back(normalized);
-  while (!pending.empty()) {
-    std::string current = std::move(pending.back());
-    pending.pop_back();
-    const DirHandle dir{current.c_str()};
-    if (!dir) {
-      if (errno == ENOENT) {
-        continue;
-      }
-      return false;
-    }
-    bool descended = false;
-    while (const dirent *entry = ::readdir(dir.get())) {
-      const std::string_view name{entry->d_name};
-      if (name == "." || name == "..") {
-        continue;
-      }
-      const std::string full = join(current, name);
-      if (full.size() < normalized.size() ||
-          full.compare(0, normalized.size(), normalized) != 0) {
-        continue;
-      }
-      struct stat info{};
-      if (::lstat(full.c_str(), &info) != 0) {
-        if (errno == ENOENT) {
-          continue;
-        }
-        return false;
-      }
-      if (S_ISDIR(info.st_mode) && !S_ISLNK(info.st_mode)) {
-        pending.push_back(std::move(current));
-        pending.push_back(full);
-        descended = true;
-        break;
-      }
-      if (S_ISREG(info.st_mode) || S_ISLNK(info.st_mode)) {
-        if (::unlink(full.c_str()) != 0) {
-          return false;
-        }
-      } else {
-        ::unlink(full.c_str());
-      }
-    }
-    if (!descended && ::rmdir(current.c_str()) != 0 && errno != ENOENT) {
-      status::print("rmdir failed for {}: errno={}", current, errno);
-      return false;
-    }
-  }
-  return true;
-}
-
 bool make_directories(std::string_view path) {
   const PathGuard guard{path_lock};
   std::string full{path};
@@ -106,20 +40,26 @@ bool make_directories(std::string_view path) {
   }
   return true;
 }
-
 void unlink_quietly(const char *path) noexcept {
   const PathGuard guard{path_lock};
   ::unlink(path);
 }
-
 bool replace_file(const char *source, const char *destination) noexcept {
   const PathGuard guard{path_lock};
   if (::rename(source, destination) == 0) {
     return true;
   }
+  const std::string backup = std::string(destination) + ".backup";
+  if (::rename(destination, backup.c_str()) != 0) {
+    return false;
+  }
+  if (::rename(source, destination) == 0) {
+    ::unlink(backup.c_str());
+    return true;
+  }
+  (void)::rename(backup.c_str(), destination);
   return false;
 }
-
 std::optional<int64_t> file_size(const char *path) noexcept {
   const PathGuard guard{path_lock};
   struct stat info{};
@@ -131,24 +71,23 @@ std::optional<int64_t> file_size(const char *path) noexcept {
   }
   return static_cast<int64_t>(info.st_size);
 }
-
-bool exists(const char *path) noexcept {
+std::optional<int64_t> file_mtime(const char *path) noexcept {
   const PathGuard guard{path_lock};
   struct stat info{};
-  return ::stat(path, &info) == 0;
+  if (::stat(path, &info) != 0 || info.st_mtime <= 0) {
+    return std::nullopt;
+  }
+  return static_cast<int64_t>(info.st_mtime);
 }
-
 sys::FileHandle open(const char *path, const char *mode) noexcept {
   const PathGuard guard{path_lock};
   return sys::FileHandle{std::fopen(path, mode)};
 }
-
 bool init_paths() {
   return make_directories(cfg::APP_DIR) &&
          make_directories(cfg::LISTS_DIR) &&
          make_directories(cfg::THUMB_DIR) &&
          make_directories(cfg::CTGP7_DIR);
 }
-
-}  // namespace sd
-}  // namespace mm
+}
+}

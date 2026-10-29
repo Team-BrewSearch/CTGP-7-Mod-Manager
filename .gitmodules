@@ -1,0 +1,3 @@
+[submodule "opendsp"]
+	path = libs/opendsp
+	url = https://github.com/Cellenseres/OpenDSP

@@ -1,24 +1,52 @@
-#include <cstring>
+#include <ctime>
 #include <mutex>
-#include "log.h"
-#include "config.h"
-#include "system.h"
-
-static mm::sys::Mutex log_mutex;
-static mm::sys::FileHandle logfile;
-static std::string last_text;
-
+#include <optional>
+#include "backend/sd_card.h"
+#include "core/log.h"
+#include "core/config.h"
+#include "core/system.h"
+namespace mm {
+namespace {
+sys::Mutex log_mutex;
+sys::FileHandle logfile;
+std::string last_text;
+/** Format the current time as UTC; return an empty string if it is nonpositive or formatting fails. */
+std::string timestamp() noexcept {
+  const std::time_t now = std::time(nullptr);
+  if (now <= 0) {
+    return std::string{};
+  }
+  std::tm gmt{};
+  gmtime_r(&now, &gmt);
+  char buffer[20]{};
+  if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &gmt) == 0) {
+    return std::string{};
+  }
+  return buffer;
+}
+}
 void log_event(const std::string &text) {
-  std::scoped_lock guard{log_mutex};
+  const std::scoped_lock guard{log_mutex};
+  if (logfile && text == last_text) {
+    return;
+  }
+  const std::optional<int64_t> size = sd::file_size(cfg::LOG_FILE.data());
+  const bool truncate = size.has_value() && *size >= static_cast<int64_t>(cfg::LOG_MAX_SIZE);
+  if (truncate) {
+    (void)logfile.close();
+  }
   if (!logfile) {
-    logfile = mm::sys::FileHandle{std::fopen(mm::cfg::LOG_FILE.data(), "w")};
+    std::FILE *handle = std::fopen(cfg::LOG_FILE.data(), truncate ? "w" : "a");
+    logfile = sys::FileHandle{handle};
     if (!logfile) {
       return;
     }
   }
   if (text != last_text) {
-    fprintf(logfile.get(), "%s\n", text.c_str());
+    const std::string line = timestamp() + " " + text;
+    fprintf(logfile.get(), "%s\n", line.c_str());
     fflush(logfile.get());
-    last_text = std::move(text);
+    last_text = text;
   }
+}
 }
