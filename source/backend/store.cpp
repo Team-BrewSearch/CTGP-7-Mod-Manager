@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
 namespace mm {
 namespace store {
 Registry installed;
@@ -165,6 +166,7 @@ bool load_installed() {
     installed.insert_or_assign(*id, std::move(record));
   }
   sd::unlink_quietly(cfg::INSTALLED_TMP.data());
+  std::vector<int> erased;
   for (Registry::Entry &entry : installed.entries()) {
     if (!entry.record.uninstalling) {
       continue;
@@ -172,7 +174,13 @@ bool load_installed() {
     for (const std::string &file : entry.record.files) {
       sd::unlink_quietly(fmt::format("{}{}", cfg::CTGP7_DIR, file).c_str());
     }
-    entry.record.uninstalling = false;
+    erased.push_back(entry.id);
+  }
+  for (const int id : erased) {
+    installed.erase(id);
+  }
+  if (!erased.empty()) {
+    save_installed();
   }
   return true;
 }

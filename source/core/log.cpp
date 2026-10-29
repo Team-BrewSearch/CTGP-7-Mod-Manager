@@ -1,5 +1,7 @@
 #include <ctime>
 #include <mutex>
+#include <optional>
+#include "backend/sd_card.h"
 #include "core/log.h"
 #include "core/config.h"
 #include "core/system.h"
@@ -25,7 +27,10 @@ std::string timestamp() noexcept {
 void log_event(const std::string &text) {
   const std::scoped_lock guard{log_mutex};
   if (!logfile) {
-    logfile = sys::FileHandle{std::fopen(mm::cfg::LOG_FILE.data(), "a")};
+    const std::optional<int64_t> size = sd::file_size(cfg::LOG_FILE.data());
+    const bool truncate = size.has_value() && *size > static_cast<int64_t>(cfg::LOG_MAX_SIZE);
+    std::FILE *handle = std::fopen(cfg::LOG_FILE.data(), truncate ? "w" : "a");
+    logfile = sys::FileHandle{handle};
     if (!logfile) {
       return;
     }

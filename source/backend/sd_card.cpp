@@ -3,7 +3,6 @@
 #include "core/status.h"
 #include <sys/stat.h>
 #include <unistd.h>
-#include <array>
 #include <cerrno>
 #include <cstdio>
 #include <utility>
@@ -50,51 +49,15 @@ bool replace_file(const char *source, const char *destination) noexcept {
   if (::rename(source, destination) == 0) {
     return true;
   }
-  const std::string temp = std::string(destination) + ".replacing";
-  sys::FileHandle input{std::fopen(source, "rb")};
-  if (!input) {
+  const std::string backup = std::string(destination) + ".backup";
+  if (::rename(destination, backup.c_str()) != 0) {
     return false;
   }
-  sys::FileHandle output{std::fopen(temp.c_str(), "wb")};
-  if (!output) {
-    return false;
-  }
-  std::array<char, 4096> buffer{};
-  bool ok = true;
-  for (;;) {
-    const std::size_t bytes_read = std::fread(buffer.data(), 1, buffer.size(), input.get());
-    if (bytes_read > 0 && std::fwrite(buffer.data(), 1, bytes_read, output.get()) != bytes_read) {
-      ok = false;
-      break;
-    }
-    if (bytes_read < buffer.size()) {
-      if (std::ferror(input.get()) != 0) {
-        ok = false;
-      }
-      break;
-    }
-  }
-  if (ok && output.get() != nullptr) {
-    (void)std::fflush(output.get());
-    (void)fsync(fileno(output.get()));
-  }
-  const bool written = output.close();
-  (void)input.close();
-  if (!ok || !written) {
-    ::unlink(temp.c_str());
-    return false;
-  }
-  if (::rename(temp.c_str(), destination) == 0) {
-    ::unlink(source);
+  if (::rename(source, destination) == 0) {
+    ::unlink(backup.c_str());
     return true;
   }
-  if (::unlink(destination) == 0 || errno == ENOENT) {
-    if (::rename(temp.c_str(), destination) == 0) {
-      ::unlink(source);
-      return true;
-    }
-  }
-  ::unlink(temp.c_str());
+  (void)::rename(backup.c_str(), destination);
   return false;
 }
 std::optional<int64_t> file_size(const char *path) noexcept {

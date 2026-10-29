@@ -50,7 +50,7 @@ ASFLAGS		:= -g $(ARCH)
 LDFLAGS		:= -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--gc-sections -Wl,-z,noexecstack
 
 LIBS	:= -lopendsp -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -ljson-c -larchive -lbz2 -llzma -lzstd -ljpeg -lz -lcitro2d -lcitro3d -lctru -lm -lvorbisidec -logg
-LIBDIRS	:= $(PORTLIBS) $(CTRULIB) $(OPENDSP)
+LIBDIRS	:= $(OPENDSP) $(PORTLIBS) $(CTRULIB)
 
 imgui_sw.o : CXXFLAGS += -Wno-unused-variable -Wno-unused-parameter -Wno-unused-function
 
@@ -134,8 +134,11 @@ $(OUTPUT).3dsx	: $(OUTPUT).elf $(_3DSXDEPS)
 $(OFILES_SOURCES) : $(HFILES)
 $(OUTPUT).elf	: $(OFILES) $(OPENDSP)/lib/libopendsp.a
 
-$(OPENDSP)/lib/libopendsp.a:
+$(OPENDSP)/lib/libopendsp.a: FORCE
 	@$(MAKE) --no-print-directory -C $(OPENDSP)
+
+.PHONY: FORCE
+FORCE:
 
 $(OUTPUT).cia	: $(OUTPUT).elf $(OUTPUT).smdh
 	@$(BANNERTOOL) makebanner -ci "../$(BNR_IMAGE)" -a "../$(BNR_AUDIO)" -o "../app/banner.bin"

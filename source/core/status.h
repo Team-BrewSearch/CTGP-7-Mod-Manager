@@ -26,6 +26,7 @@ void print(fmt::Spec<std::type_identity_t<Args>...> spec, const Args &...args) {
 [[nodiscard]] std::string current();
 void begin_feed();
 void mark_feed_done(bool ok, bool updated);
+void seed_feed_time(int64_t mtime) noexcept;
 [[nodiscard]] bool feed_finished();
 [[nodiscard]] bool feed_succeeded();
 [[nodiscard]] bool feed_updated();

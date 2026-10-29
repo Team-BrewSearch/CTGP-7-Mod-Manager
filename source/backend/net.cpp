@@ -491,7 +491,7 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
     return false;
   }
   const char *store = choose_ca_store();
-  const bool have_store = store != nullptr;
+  const bool have_store = store != nullptr && store != cfg::CA_BUNDLE_ROMFS.data();
   std::string cached_etag;
   if (have_store) {
     ca_bundle_path.store(store, std::memory_order_release);
@@ -508,12 +508,14 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
   if (cancelled(cancel)) {
     return false;
   }
+  bool fetched_unverified = false;
   if (have_store &&
       (outcome == CURLE_PEER_FAILED_VERIFICATION || outcome == CURLE_SSL_CACERT_BADFILE)) {
     log_event("CA bundle: certificate check failed; retrying unverified with hash verification");
     body.clear();
     reply_etag.clear();
     outcome = fetch_ca_bundle(false, cfg::CA_BUNDLE_URL.data(), std::string{}, body, reply_etag, status, cancel);
+    fetched_unverified = true;
     if (cancelled(cancel)) {
       return false;
     }
@@ -533,12 +535,12 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
   std::string hash_etag;
   long hash_status = 0;
   CURLcode hash_outcome =
-      fetch_ca_bundle(have_store, cfg::CA_BUNDLE_HASH_URL.data(), std::string{}, hash_body, hash_etag, hash_status, cancel);
+      fetch_ca_bundle(true, cfg::CA_BUNDLE_HASH_URL.data(), std::string{}, hash_body, hash_etag, hash_status, cancel);
   if (cancelled(cancel)) {
     return false;
   }
   if (hash_outcome != CURLE_OK || hash_status != 200) {
-    if (!have_store) {
+    if (!have_store || fetched_unverified) {
       log_event("CA bundle: hash fetch unavailable; keeping shipped anchor");
       return false;
     }

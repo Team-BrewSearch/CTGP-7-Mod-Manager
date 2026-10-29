@@ -18,27 +18,27 @@ jobs:
       - name: Cache devkitPro
         uses: actions/cache@v4
         with:
-          path: |
-            /opt/devkitpro
-            /opt/devkitARM
+          path: /opt/devkitpro
           key: ${{ runner.os }}-devkit-${{ hashFiles('**/Makefile') }}
           restore-keys: |
             ${{ runner.os }}-devkit-
       - name: Install devkitPro
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget bsdtar
-          wget -q -O - https://github.com/devkitPro/environment/releases/download/latest/installer.sh | sudo sh -x
-      - name: Install 3DS portlibs
+          sudo apt-get install -y wget libarchive-tools
+          wget -q -O - https://github.com/devkitPro/pacman/releases/latest/download/devkitpro-pacman.amd64.deb | sudo dpkg -i -
+      - name: Install 3DS toolchain and portlibs
         run: |
-          export DEVKITARM=/opt/devkitARM
-          export DEVKITPRO=/opt/devkitPro
-          dkp-pacman -S --noconfirm 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
+          export DEVKITARM=/opt/devkitpro/devkitARM
+          export DEVKITPRO=/opt/devkitpro
+          dkp-pacman -Sy --noconfirm
+          dkp-pacman -S --noconfirm 3ds-dev bannertool makerom 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
       - name: Build
         run: |
-          export DEVKITARM=/opt/devkitARM
-          export DEVKITPRO=/opt/devkitPro
+          export DEVKITARM=/opt/devkitpro/devkitARM
+          export DEVKITPRO=/opt/devkitpro
           make 2>&1 | tee build.log
+        shell: bash -eo pipefail {0}
       - name: Check for warnings
         run: |
           if grep -E "warning:|error:" build.log; then

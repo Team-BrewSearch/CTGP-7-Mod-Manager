@@ -127,12 +127,14 @@ bool jpeg_encode(unsigned char *rgb, unsigned char **out_buffer,
     unsigned char *owned = static_cast<unsigned char *>(std::malloc(length));
     if (owned != nullptr) {
       std::memcpy(owned, buffer, length);
+      std::free(buffer);
       *out_buffer = owned;
       *out_length = length;
       jpeg_destroy_compress(&cinfo);
       return true;
     }
   }
+  std::free(buffer);
   jpeg_destroy_compress(&cinfo);
   return false;
 }

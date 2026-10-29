@@ -25,6 +25,11 @@ void begin_feed() {
   }
   version.fetch_add(1, std::memory_order_release);
 }
+void seed_feed_time(int64_t mtime) noexcept {
+  if (mtime > 0) {
+    feed_time.store(mtime, std::memory_order_release);
+  }
+}
 void mark_feed_done(bool ok, bool updated) {
   {
     std::scoped_lock guard{lock};

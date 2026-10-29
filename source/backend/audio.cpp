@@ -131,7 +131,8 @@ void thread_main(void *) {
     buffer.status = NDSP_WBUF_DONE;
     if (buffer.nsamples > 0) {
       DSP_FlushDataCache(buffer.data_pcm16,
-                         static_cast<u32>(buffer.nsamples * sizeof(s16)));
+                         static_cast<u32>(buffer.nsamples * sizeof(s16) *
+                                          static_cast<std::size_t>(channel_count)));
       ndspChnWaveBufAdd(0, &buffer);
     }
     current = (current + 1) % cfg::AUDIO_BUFFERS;

@@ -52,6 +52,7 @@ inline constexpr std::string_view LISTS_DIR = "sdmc:/3ds/CTGP-7-Mod-Manager/cach
 inline constexpr std::string_view THUMB_DIR = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/images/";
 inline constexpr std::string_view CTGP7_DIR = "sdmc:/CTGP-7/MyStuff/Characters/";
 inline constexpr std::string_view LOG_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/output.log";
+inline constexpr std::size_t LOG_MAX_SIZE = 1024 * 1024;
 inline constexpr std::string_view MOD_LIST_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/lists/modlist.json";
 inline constexpr std::string_view INSTALLED_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/installed_mods.json";
 inline constexpr std::string_view INSTALLED_TMP = "sdmc:/3ds/CTGP-7-Mod-Manager/installed_mods.json.tmp";

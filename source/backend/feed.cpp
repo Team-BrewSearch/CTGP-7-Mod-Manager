@@ -415,6 +415,7 @@ void thread_main(void *arg) {
   const bool force = arg != nullptr;
   if (!force && cache_is_fresh()) {
     log_event("Feed: cached list is fresh, skipping refresh");
+    status::seed_feed_time(sd::file_mtime(cfg::MOD_LIST_FILE.data()).value_or(0));
     status::mark_feed_done(true, false);
     return;
   }
@@ -426,6 +427,9 @@ void thread_main(void *arg) {
   }
   const bool ok = run_pipeline();
   net::share_cleanup();
+  if (!ok) {
+    status::seed_feed_time(sd::file_mtime(cfg::MOD_LIST_FILE.data()).value_or(0));
+  }
   status::mark_feed_done(ok, ok);
 }
 }
