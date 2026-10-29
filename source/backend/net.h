@@ -1,59 +1,45 @@
 #pragma once
-
 #include "core/config.h"
 #include "core/system.h"
-
 #include <curl/curl.h>
-
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <concepts>
 #include <cstddef>
 #include <string>
-
 namespace mm {
 namespace net {
-
 struct Response {
   std::string data;
   long status_code = 0;
   bool ok = false;
 };
-
 extern std::atomic<int> failed_requests;
 extern std::array<sys::Mutex, CURL_LOCK_DATA_LAST> share_locks;
 extern sys::CurlShare share;
-
 void share_lock_cb(CURL *, curl_lock_data data, curl_lock_access, void *);
-
 void share_unlock_cb(CURL *, curl_lock_data data, void *);
-
 void share_init();
-
 void share_cleanup();
-
 std::size_t write_to_string(void *contents, std::size_t size, std::size_t nmemb, void *userp);
-
 void configure(CURL *curl) noexcept;
-
-[[nodiscard]] Response get(CURL *curl, const std::string &url);
-
+void init_ca_bundle() noexcept;
+[[nodiscard]] bool refresh_ca_bundle(const std::atomic<bool> *cancel = nullptr);
+[[nodiscard]] Response get(CURL *curl, const std::string &url,
+                           const std::atomic<bool> *cancel = nullptr);
 [[nodiscard]] constexpr bool request_too_large(long code) noexcept {
   return code == 400 || code == 413 || code == 414;
 }
-
-[[nodiscard]] Response get_with_retry(CURL *curl, const std::string &url, int max_attempts);
-
+[[nodiscard]] Response get_with_retry(CURL *curl, const std::string &url, int max_attempts,
+                                      const std::atomic<bool> *cancel = nullptr);
 template <typename Fn>
 concept JobFunction = std::invocable<Fn &, CURL *, std::size_t>;
-
 template <JobFunction Fn>
 struct JobPool {
   std::atomic<std::size_t> next{0};
   std::size_t count = 0;
   Fn *job = nullptr;
-
   void run() noexcept {
     sys::CurlHandle curl;
     if (!curl) {
@@ -68,12 +54,10 @@ struct JobPool {
       (*job)(curl.get(), index);
     }
   }
-
   static void entry(void *self) noexcept {
     static_cast<JobPool *>(self)->run();
   }
 };
-
 template <JobFunction Fn>
 void run_jobs(std::size_t count, Fn &job) {
   if (count == 0) {
@@ -116,6 +100,5 @@ void run_jobs(std::size_t count, Fn &job) {
     workers[i].join();
   }
 }
-
-}  // namespace net
-}  // namespace mm
+}
+}

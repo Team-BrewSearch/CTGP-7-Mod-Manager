@@ -1,20 +1,15 @@
 #include "backend/thumbnail_source.h"
-
 #include "backend/net.h"
 #include "backend/sd_card.h"
 #include "core/format.h"
-
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
 namespace mm {
 namespace thumbs {
-
 namespace {
-
 [[nodiscard]] consteval bool tiled_index_is_bijective() {
   constexpr std::size_t TEXELS = static_cast<std::size_t>(cfg::THUMB_TEX_W) *
                                  static_cast<std::size_t>(cfg::THUMB_TEX_H);
@@ -30,23 +25,17 @@ namespace {
   }
   return true;
 }
-
 static_assert(tiled_index_is_bijective(),
               "The tiled texture index must cover every texel exactly once.");
-
-}  // namespace
-
+}
 static_assert(pick_scale_numerator(220, 124) == 4,
               "220x124 should decode at 4/8 scale.");
 static_assert(pick_scale_numerator(110, 62) == 8,
               "A 110x62 source must not be downscaled.");
-
 void jpeg_error_exit(j_common_ptr info) {
   longjmp(reinterpret_cast<JpegError *>(info->err)->jump, 1);
 }
-
 void jpeg_silence(j_common_ptr) {}
-
 bool jpeg_decode(const unsigned char *source, std::size_t length, RawImage &out) {
   jpeg_decompress_struct cinfo;
   JpegError jerr;
@@ -84,10 +73,10 @@ bool jpeg_decode(const unsigned char *source, std::size_t length, RawImage &out)
               break;
             }
           }
+          jpeg_finish_decompress(&cinfo);
           ok = cinfo.output_scanline >= cinfo.output_height;
           width = static_cast<int>(cinfo.output_width);
           height = static_cast<int>(cinfo.output_height);
-          jpeg_finish_decompress(&cinfo);
         }
       }
     }
@@ -102,7 +91,6 @@ bool jpeg_decode(const unsigned char *source, std::size_t length, RawImage &out)
   out.height = height;
   return true;
 }
-
 bool jpeg_encode(unsigned char *rgb, unsigned char **out_buffer,
                  unsigned long *out_length) {
   jpeg_compress_struct cinfo;
@@ -135,16 +123,19 @@ bool jpeg_encode(unsigned char *rgb, unsigned char **out_buffer,
       ok = true;
     }
   }
-  jpeg_destroy_compress(&cinfo);
-  if (!ok || buffer == nullptr) {
-    std::free(buffer);
-    return false;
+  if (ok && buffer != nullptr && length > 0) {
+    unsigned char *owned = static_cast<unsigned char *>(std::malloc(length));
+    if (owned != nullptr) {
+      std::memcpy(owned, buffer, length);
+      *out_buffer = owned;
+      *out_length = length;
+      jpeg_destroy_compress(&cinfo);
+      return true;
+    }
   }
-  *out_buffer = buffer;
-  *out_length = length;
-  return true;
+  jpeg_destroy_compress(&cinfo);
+  return false;
 }
-
 void crop_resize(const RawImage &source, unsigned char *destination) noexcept {
   const int source_width = source.width;
   const int source_height = source.height;
@@ -207,7 +198,6 @@ void crop_resize(const RawImage &source, unsigned char *destination) noexcept {
     }
   }
 }
-
 void swizzle_rgb565(const unsigned char *source, int source_width, int source_height,
                     u16 *destination) noexcept {
   for (u32 y = 0; y < cfg::THUMB_TEX_H; ++y) {
@@ -229,11 +219,9 @@ void swizzle_rgb565(const unsigned char *source, int source_width, int source_he
     }
   }
 }
-
 std::string cache_path(int mod_id) {
   return fmt::format("{}{}.jpg", cfg::THUMB_DIR, mod_id);
 }
-
 std::optional<Buffer> read_cached(const char *path) {
   sys::FileHandle file = sd::open(path, "rb");
   if (!file) {
@@ -260,7 +248,6 @@ std::optional<Buffer> read_cached(const char *path) {
   }
   return buffer;
 }
-
 bool write_cached(const std::string &path, const void *data, std::size_t length) {
   const std::string temporary = path + ".tmp";
   {
@@ -277,9 +264,7 @@ bool write_cached(const std::string &path, const void *data, std::size_t length)
   }
   return sd::replace_file(temporary.c_str(), path.c_str());
 }
-
 std::atomic<bool> quit_requested{false};
-
 std::size_t download_write(void *contents, std::size_t size, std::size_t nmemb, void *userp) {
   auto *sink = static_cast<DownloadBuffer *>(userp);
   std::size_t total = 0;
@@ -311,11 +296,9 @@ std::size_t download_write(void *contents, std::size_t size, std::size_t nmemb, 
   sink->length += total;
   return total;
 }
-
 int download_abort(void *, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
   return quit_requested.load(std::memory_order_acquire) ? 1 : 0;
 }
-
 void configure_download(CURL *curl) noexcept {
   net::configure(curl);
   curl_easy_setopt(curl, CURLOPT_SHARE, nullptr);
@@ -326,7 +309,6 @@ void configure_download(CURL *curl) noexcept {
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, &download_abort);
 }
-
 bool produce(CURL *curl, int mod_id, const char *url, u16 *destination) {
   const std::string path = cache_path(mod_id);
   RawImage image{};
@@ -343,6 +325,7 @@ bool produce(CURL *curl, int mod_id, const char *url, u16 *destination) {
         quit_requested.load(std::memory_order_acquire)) {
       return false;
     }
+    configure_download(curl);
     DownloadBuffer sink;
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
@@ -386,6 +369,5 @@ bool produce(CURL *curl, int mod_id, const char *url, u16 *destination) {
   GSPGPU_FlushDataCache(destination, cfg::THUMB_TEX_BYTES);
   return true;
 }
-
-}  // namespace thumbs
-}  // namespace mm
+}
+}

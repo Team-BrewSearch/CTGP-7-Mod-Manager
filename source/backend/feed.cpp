@@ -1,26 +1,42 @@
 #include "backend/feed.h"
-
 #include "backend/json.h"
 #include "backend/net.h"
 #include "backend/sd_card.h"
 #include "core/config.h"
 #include "core/format.h"
+#include "core/log.h"
 #include "core/progress.h"
 #include "core/status.h"
 #include "core/system.h"
-
 #include <algorithm>
+#include <ctime>
 #include <iterator>
 #include <ranges>
 #include <string>
 #include <utility>
-
 namespace mm {
 namespace feed {
-
 std::atomic<std::size_t> core_batch_cap{cfg::CORE_BATCH_SIZE};
 std::atomic<bool> quit_requested{false};
-
+void report_status(const std::string &text) {
+  status::print("{}", text);
+  log_event(text);
+}
+bool cache_is_fresh() {
+  if (!store::mod_list_version_ok()) {
+    return false;
+  }
+  const std::optional<int64_t> mtime = sd::file_mtime(cfg::MOD_LIST_FILE.data());
+  if (!mtime) {
+    return false;
+  }
+  const std::time_t now = std::time(nullptr);
+  if (now <= 0) {
+    return false;
+  }
+  const int64_t age = static_cast<int64_t>(now) - *mtime;
+  return age >= 0 && age < cfg::FEED_MAX_AGE_SECONDS;
+}
 void parse_index_records(json_object *records, std::vector<ModData> &out) {
   for (json_object *record : js::ArrayView{records}) {
     if (!js::is(record, json_type_object)) {
@@ -65,12 +81,15 @@ void parse_index_records(json_object *records, std::vector<ModData> &out) {
     out.push_back(std::move(mod));
   }
 }
-
 bool fetch_index_page(CURL *curl, int category_id, int page, PageResult &out) {
   const std::string url = fmt::format(
       "{}?_nPage={}&_nPerpage={}&_aFilters[Generic_Category]={}",
       cfg::API_V10_INDEX, page, cfg::INDEX_PER_PAGE, category_id);
-  const net::Response response = net::get_with_retry(curl, url, cfg::MAX_FETCH_ATTEMPTS);
+  const net::Response response =
+      net::get_with_retry(curl, url, cfg::MAX_FETCH_ATTEMPTS, &quit_requested);
+  if (quit_requested.load(std::memory_order_acquire)) {
+    return false;
+  }
   if (!response.ok) {
     return false;
   }
@@ -85,7 +104,6 @@ bool fetch_index_page(CURL *curl, int category_id, int page, PageResult &out) {
   out.ok = true;
   return true;
 }
-
 void collect_pages(const std::vector<PageJob> &jobs, std::vector<PageResult> &results) {
   results.clear();
   results.resize(jobs.size());
@@ -118,7 +136,6 @@ void collect_pages(const std::vector<PageJob> &jobs, std::vector<PageResult> &re
   };
   net::run_jobs(jobs.size(), run_page_job);
 }
-
 void deduplicate(std::vector<ModData> &mods) {
   if (mods.size() <= 1) {
     return;
@@ -127,18 +144,29 @@ void deduplicate(std::vector<ModData> &mods) {
   const auto duplicates = std::ranges::unique(mods, {}, &ModData::id);
   mods.erase(duplicates.begin(), duplicates.end());
 }
-
-void parse_latest_file(json_object *raw_item, ModData &mod) {
+bool parse_latest_file(json_object *raw_item, ModData &mod) {
   json_object *item = raw_item;
-  if (js::is(raw_item, json_type_array)) {
-    const js::ArrayView wrapper{raw_item};
+  for (int depth = 0; depth < 4 && js::is(item, json_type_array); ++depth) {
+    const js::ArrayView wrapper{item};
     if (wrapper.empty()) {
-      return;
+      return false;
+    }
+    json_object *row_object = nullptr;
+    for (json_object *entry : wrapper) {
+      if (row_object == nullptr && js::is(entry, json_type_object)) {
+        row_object = entry;
+      } else if (mod.category_id == 0 && js::is(entry, json_type_int)) {
+        mod.category_id = json_object_get_int(entry);
+      }
+    }
+    if (row_object != nullptr) {
+      item = row_object;
+      break;
     }
     item = *wrapper.begin();
   }
   if (!js::is(item, json_type_object)) {
-    return;
+    return false;
   }
   int64_t newest = 0;
   const auto consider = [&mod, &newest](json_object *file) {
@@ -160,14 +188,14 @@ void parse_latest_file(json_object *raw_item, ModData &mod) {
     for (json_object *file : files) {
       consider(file);
     }
-    return;
+    return true;
   }
   json_object_object_foreach(item, key, value) {
     (void)key;
     consider(value);
   }
+  return true;
 }
-
 void lower_core_cap(std::size_t limit) noexcept {
   const std::size_t target = std::max<std::size_t>(limit, 1);
   std::size_t current = core_batch_cap.load(std::memory_order_acquire);
@@ -175,7 +203,6 @@ void lower_core_cap(std::size_t limit) noexcept {
          !core_batch_cap.compare_exchange_weak(current, target, std::memory_order_acquire)) {
   }
 }
-
 void fetch_core_range(CURL *curl, std::span<ModData> mods) {
   if (mods.empty() || quit_requested.load(std::memory_order_acquire)) {
     return;
@@ -194,12 +221,16 @@ void fetch_core_range(CURL *curl, std::span<ModData> mods) {
   constexpr std::size_t MAX_URL_LENGTH = 4096;
   std::string url{cfg::API_CORE_DATA};
   url += '?';
-  for (ModData &mod : mods) {
+  std::size_t next = 0;
+  for (; next < mods.size(); ++next) {
+    ModData &mod = mods[next];
     if (!mod.latest_file_url.empty()) {
       continue;
     }
-    const std::string part =
-        fmt::format("itemtype[]=Mod&itemid[]={}&fields[]=Files().aFiles()&", mod.id);
+    const std::size_t index = targets.size();
+    const std::string part = fmt::format(
+        "itemtype[{}]=Mod&itemid[{}]={}&fields[{}]=Files().aFiles(),catid&", index, index,
+        mod.id, index);
     if (url.size() + part.size() > MAX_URL_LENGTH) {
       break;
     }
@@ -207,6 +238,9 @@ void fetch_core_range(CURL *curl, std::span<ModData> mods) {
     targets.push_back(&mod);
   }
   if (targets.empty()) {
+    if (next < mods.size() && mods.size() > 1) {
+      split(mods);
+    }
     return;
   }
   if (url.back() == '&') {
@@ -214,40 +248,40 @@ void fetch_core_range(CURL *curl, std::span<ModData> mods) {
   }
   bool resolved = false;
   bool too_big = false;
-  const net::Response response = net::get_with_retry(curl, url, cfg::MAX_FETCH_ATTEMPTS);
+  const net::Response response =
+      net::get_with_retry(curl, url, cfg::MAX_FETCH_ATTEMPTS, &quit_requested);
+  if (quit_requested.load(std::memory_order_acquire)) {
+    return;
+  }
   if (response.ok) {
     const sys::JsonRef root{json_tokener_parse(response.data.c_str())};
     if (root) {
-      if (targets.size() == 1) {
-        parse_latest_file(root.get(), *targets[0]);
-        resolved = true;
-      } else {
-        const js::ArrayView items{root.get()};
-        if (items.size() == targets.size()) {
-          std::size_t index = 0;
-          for (json_object *item : items) {
-            if (item != nullptr) {
-              parse_latest_file(item, *targets[index]);
-            }
-            ++index;
-          }
-          resolved = true;
+      const js::ArrayView rows{root.get()};
+      if (rows.size() == targets.size()) {
+        std::size_t index = 0;
+        for (json_object *row : rows) {
+          (void)parse_latest_file(row, *targets[index]);
+          ++index;
         }
+        resolved = true;
       }
     }
-    too_big = !resolved;
   } else if (net::request_too_large(response.status_code)) {
     too_big = true;
   }
-  if (resolved || mods.size() == 1) {
+  if (!resolved) {
+    if (too_big) {
+      lower_core_cap(mods.size() / 2);
+    }
+    if (mods.size() > 1) {
+      split(mods);
+    }
     return;
   }
-  if (too_big) {
-    lower_core_cap(mods.size() / 2);
+  if (next < mods.size()) {
+    fetch_core_range(curl, mods.subspan(next));
   }
-  split(mods);
 }
-
 void fetch_core_data(std::vector<ModData> &mods) {
   if (mods.empty()) {
     return;
@@ -266,7 +300,6 @@ void fetch_core_data(std::vector<ModData> &mods) {
   progress::begin("Resolving downloads ", batches);
   net::run_jobs(batches, run_batch);
 }
-
 void drain_pages(std::vector<PageResult> &results, std::vector<ModData> &out) {
   std::size_t incoming = 0;
   for (const PageResult &result : results) {
@@ -280,7 +313,6 @@ void drain_pages(std::vector<PageResult> &results, std::vector<ModData> &out) {
     std::vector<ModData>{}.swap(result.mods);
   }
 }
-
 std::vector<PageJob> plan_remaining_pages(const std::vector<PageResult> &first_pass) {
   std::vector<PageJob> jobs;
   const std::size_t count = std::min(first_pass.size(), cfg::CATEGORIES.size());
@@ -310,10 +342,9 @@ std::vector<PageJob> plan_remaining_pages(const std::vector<PageResult> &first_p
   }
   return jobs;
 }
-
-void run_pipeline() {
+bool run_pipeline() {
   if (quit_requested.load(std::memory_order_acquire)) {
-    return;
+    return false;
   }
   std::vector<ModData> all_mods;
   std::vector<PageJob> first_jobs(cfg::CATEGORIES.size());
@@ -325,8 +356,8 @@ void run_pipeline() {
   progress::begin("Scanning categories ", first_jobs.size());
   collect_pages(first_jobs, first_results);
   if (quit_requested.load(std::memory_order_acquire)) {
-    status::print("Feed cancelled.");
-    return;
+    report_status("Feed cancelled.");
+    return false;
   }
   const std::vector<PageJob> more_jobs = plan_remaining_pages(first_results);
   drain_pages(first_results, all_mods);
@@ -335,63 +366,67 @@ void run_pipeline() {
     progress::begin("Fetching mod pages ", more_jobs.size());
     collect_pages(more_jobs, more_results);
     if (quit_requested.load(std::memory_order_acquire)) {
-      status::print("Feed cancelled.");
-      return;
+      report_status("Feed cancelled.");
+      return false;
     }
     drain_pages(more_results, all_mods);
   }
   if (all_mods.empty()) {
-    status::print("Failed to fetch any mods!");
-    return;
+    report_status("Failed to fetch any mods!");
+    return false;
   }
   deduplicate(all_mods);
   fetch_core_data(all_mods);
   if (quit_requested.load(std::memory_order_acquire)) {
-    status::print("Feed cancelled.");
-    return;
+    report_status("Feed cancelled.");
+    return false;
   }
+  const std::size_t before_filter = all_mods.size();
+  std::erase_if(all_mods, [](const ModData &mod) {
+    return std::find(cfg::NON_CHARACTER_CATEGORIES.begin(),
+                     cfg::NON_CHARACTER_CATEGORIES.end(),
+                     mod.category_id) != cfg::NON_CHARACTER_CATEGORIES.end();
+  });
+  const std::size_t filtered = before_filter - all_mods.size();
   status::print("Saving...");
   const std::size_t resolved = static_cast<std::size_t>(
       std::ranges::count_if(all_mods, [](const ModData &mod) {
         return !mod.latest_file_url.empty();
       }));
   if (!store::write_mod_list(cfg::MOD_LIST_FILE.data(), all_mods)) {
-    status::print("Fatal: could not write mod list. Aborting pipeline.");
-    return;
-  }
-  std::ranges::sort(all_mods, {}, &ModData::name);
-  if (!store::write_mod_list(cfg::BY_NAME_FILE.data(), all_mods)) {
-    status::print("Warning: failed to write byname.json");
-  }
-  std::ranges::sort(all_mods, std::ranges::greater{}, &ModData::name);
-  if (!store::write_mod_list(cfg::BY_NAME_REVERSED_FILE.data(), all_mods)) {
-    status::print("Warning: failed to write bynamereversed.json");
-  }
-  std::ranges::sort(all_mods, std::ranges::greater{}, &ModData::latest_file_date);
-  if (!store::write_mod_list(cfg::BY_UPDATED_FILE.data(), all_mods)) {
-    status::print("Warning: failed to write byupdated.json");
-  }
-  std::ranges::sort(all_mods, {}, &ModData::latest_file_date);
-  if (!store::write_mod_list(cfg::BY_UPDATED_REVERSED_FILE.data(), all_mods)) {
-    status::print("Warning: failed to write byupdatedreversed.json");
+    report_status("Fatal: could not write mod list. Aborting pipeline.");
+    return false;
   }
   const int failures = net::failed_requests.load(std::memory_order_acquire);
+  std::string summary;
   if (failures > 0) {
-    status::print("Done: {} mods, {} resolved, {} request(s) retried/failed.",
-                  all_mods.size(), resolved, failures);
+    summary = fmt::format(
+        "Done: {} mods, {} resolved, {} filtered, {} request(s) retried/failed.",
+        all_mods.size(), resolved, filtered, failures);
   } else {
-    status::print("Done! Enriched {}/{} mods.", resolved, all_mods.size());
+    summary = fmt::format("Done! Enriched {}/{} mods, {} non-character filtered.", resolved,
+                          all_mods.size(), filtered);
   }
+  report_status(summary);
+  return true;
 }
-
-void thread_main(void *) {
-  (void)sd::remove_tree(cfg::LISTS_DIR);
+void thread_main(void *arg) {
   (void)sd::init_paths();
+  const bool force = arg != nullptr;
+  if (!force && cache_is_fresh()) {
+    log_event("Feed: cached list is fresh, skipping refresh");
+    status::mark_feed_done(true, false);
+    return;
+  }
+  log_event(force ? "Feed: manual refresh" : "Feed: cached list is stale, refreshing");
+  net::failed_requests.store(0, std::memory_order_release);
   net::share_init();
-  run_pipeline();
+  if (!quit_requested.load(std::memory_order_acquire)) {
+    (void)net::refresh_ca_bundle(&quit_requested);
+  }
+  const bool ok = run_pipeline();
   net::share_cleanup();
-  status::mark_feed_done();
+  status::mark_feed_done(ok, ok);
 }
-
-}  // namespace feed
-}  // namespace mm
+}
+}

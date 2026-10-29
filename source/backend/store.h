@@ -1,5 +1,4 @@
 #pragma once
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -7,12 +6,11 @@
 #include <string>
 #include <utility>
 #include <vector>
-
 namespace mm {
 namespace store {
-
 struct ModData {
   int id = 0;
+  int category_id = 0;
   std::string name;
   std::string author;
   std::string thumbnail_url;
@@ -20,20 +18,18 @@ struct ModData {
   int64_t latest_file_date = 0;
   std::string latest_file_name;
 };
-
 struct InstallRecord {
   int64_t date = 0;
   std::vector<std::string> files;
   std::string source_file_name;
+  bool uninstalling = false;
 };
-
 class Registry {
  public:
   struct Entry {
     int id = 0;
     InstallRecord record;
   };
-
   [[nodiscard]] const InstallRecord *find(int id) const noexcept {
     std::scoped_lock guard{mutex_};
     const auto it = lower_bound(id);
@@ -42,11 +38,17 @@ class Registry {
     }
     return &it->record;
   }
-
+  [[nodiscard]] InstallRecord *find(int id) noexcept {
+    std::scoped_lock guard{mutex_};
+    const auto it = lower_bound(id);
+    if (it == entries_.end() || it->id != id) {
+      return nullptr;
+    }
+    return &it->record;
+  }
   [[nodiscard]] bool contains(int id) const noexcept {
     return find(id) != nullptr;
   }
-
   void insert_or_assign(int id, InstallRecord record) {
     std::scoped_lock guard{mutex_};
     const auto it = lower_bound(id);
@@ -56,7 +58,6 @@ class Registry {
     }
     entries_.insert(it, Entry{id, std::move(record)});
   }
-
   bool erase(int id) {
     std::scoped_lock guard{mutex_};
     const auto it = lower_bound(id);
@@ -66,22 +67,22 @@ class Registry {
     entries_.erase(it);
     return true;
   }
-
   void clear() noexcept {
     std::scoped_lock guard{mutex_};
     entries_.clear();
   }
-
   [[nodiscard]] std::size_t size() const noexcept {
     std::scoped_lock guard{mutex_};
     return entries_.size();
   }
-
-  [[nodiscard]] const std::vector<Entry> &entries() const noexcept {
-    std::scoped_lock guard{mutex_};
-    return entries_;
-  }
-
+   [[nodiscard]] const std::vector<Entry> &entries() const noexcept {
+     std::scoped_lock guard{mutex_};
+     return entries_;
+   }
+   [[nodiscard]] std::vector<Entry> &entries() noexcept {
+     std::scoped_lock guard{mutex_};
+     return entries_;
+   }
  private:
   [[nodiscard]] std::vector<Entry>::iterator lower_bound(int id) noexcept {
     return std::lower_bound(entries_.begin(), entries_.end(), id,
@@ -89,27 +90,20 @@ class Registry {
                               return entry.id < key;
                             });
   }
-
   [[nodiscard]] std::vector<Entry>::const_iterator lower_bound(int id) const noexcept {
     return std::lower_bound(entries_.begin(), entries_.end(), id,
                             [](const Entry &entry, int key) {
                               return entry.id < key;
                             });
   }
-
   mutable std::mutex mutex_;
   std::vector<Entry> entries_;
 };
-
 extern Registry installed;
-
 [[nodiscard]] bool write_mod_list(const char *path, const std::vector<ModData> &mods);
-
 [[nodiscard]] bool read_mod_list(const char *path, std::vector<ModData> &out);
-
+[[nodiscard]] bool mod_list_version_ok();
 [[nodiscard]] bool load_installed();
-
 [[nodiscard]] bool save_installed();
-
-}  // namespace store
-}  // namespace mm
+}
+}

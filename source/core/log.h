@@ -1,7 +1,5 @@
-#ifndef CTGP7MODMANAGER_LOG_H
-#define CTGP7MODMANAGER_LOG_H
+#pragma once
 #include <string>
-
+namespace mm {
 void log_event(const std::string &text);
-
-#endif //CTGP7MODMANAGER_LOG_H
+}

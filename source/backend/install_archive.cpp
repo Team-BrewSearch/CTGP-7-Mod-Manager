@@ -1,18 +1,13 @@
 #include "backend/install_archive.h"
-
 #include "backend/install.h"
 #include "backend/sd_card.h"
 #include "core/format.h"
 #include "core/system.h"
-
 #include <array>
 #include <atomic>
-
 namespace mm {
 namespace install {
-
 namespace {
-
 [[nodiscard]] consteval bool sanitize_entry_name_is_safe() {
   const auto rejects = [](std::string_view input) {
     return sanitize_entry_name(input).empty();
@@ -77,18 +72,14 @@ namespace {
   const std::string overlong(cfg::INSTALL_NAME_MAX + 1, 'x');
   return sanitize_entry_name(overlong).empty();
 }
-
 static_assert(sanitize_entry_name_is_safe(),
               "Archive entry names must be reduced to a safe bare filename.");
-
-}  // namespace
-
+}
 bool extension_supported(std::string_view file_name) noexcept {
   return ends_with_ci(file_name, ".zip") ||
          ends_with_ci(file_name, ".7z") ||
          ends_with_ci(file_name, ".rar");
 }
-
 std::string archive_message(struct archive *handle, std::string_view what) {
   const char *detail = handle != nullptr ? archive_error_string(handle) : nullptr;
   if (detail != nullptr && detail[0] != '\0') {
@@ -96,7 +87,6 @@ std::string archive_message(struct archive *handle, std::string_view what) {
   }
   return std::string(what);
 }
-
 bool write_zeros(std::FILE *file, int64_t count) noexcept {
   constexpr std::size_t CHUNK = 512;
   const std::array<char, CHUNK> zeros{};
@@ -109,7 +99,6 @@ bool write_zeros(std::FILE *file, int64_t count) noexcept {
   }
   return true;
 }
-
 void publish_progress(struct archive *handle, int64_t archive_bytes,
                       std::size_t file_count) noexcept {
   files_written.store(static_cast<int>(file_count), std::memory_order_release);
@@ -124,7 +113,6 @@ void publish_progress(struct archive *handle, int64_t archive_bytes,
   percent.store(static_cast<int>(std::clamp<int64_t>(ratio, 0, 100)),
                 std::memory_order_release);
 }
-
 std::size_t extract(const char *archive_path, ExtractResult &out) {
   ArchiveReader reader;
   if (!reader) {
@@ -272,6 +260,5 @@ std::size_t extract(const char *archive_path, ExtractResult &out) {
   discard.dismiss();
   return out.files.size();
 }
-
-}  // namespace install
-}  // namespace mm
+}
+}

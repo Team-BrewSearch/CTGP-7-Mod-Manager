@@ -1,5 +1,4 @@
 #include "frontend/app.h"
-
 int main() {
   mm::app::Platform platform;
   if (!platform.init()) {

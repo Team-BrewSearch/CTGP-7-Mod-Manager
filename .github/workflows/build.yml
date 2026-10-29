@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    name: Compile (devkitARM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Cache devkitPro
+        uses: actions/cache@v4
+        with:
+          path: |
+            /opt/devkitpro
+            /opt/devkitARM
+          key: ${{ runner.os }}-devkit-${{ hashFiles('**/Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-devkit-
+      - name: Install devkitPro
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget bsdtar
+          wget -q -O - https://github.com/devkitPro/environment/releases/download/latest/installer.sh | sudo sh -x
+      - name: Install 3DS portlibs
+        run: |
+          export DEVKITARM=/opt/devkitARM
+          export DEVKITPRO=/opt/devkitPro
+          dkp-pacman -S --noconfirm 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
+      - name: Build
+        run: |
+          export DEVKITARM=/opt/devkitARM
+          export DEVKITPRO=/opt/devkitPro
+          make 2>&1 | tee build.log
+      - name: Check for warnings
+        run: |
+          if grep -E "warning:|error:" build.log; then
+            echo "Build produced warnings or errors"
+            exit 1
+          fi

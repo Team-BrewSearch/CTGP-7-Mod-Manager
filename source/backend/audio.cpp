@@ -1,31 +1,26 @@
 #include "backend/audio.h"
-
 #include "backend/sd_card.h"
 #include "core/config.h"
 #include "core/status.h"
-
+#include <opendsp.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <limits>
-
 namespace mm {
 namespace audio {
-
 OggVorbis_File stream{};
 bool loop_mode = false;
 std::atomic<bool> should_stop{false};
 long sample_rate = 32768;
 int channel_count = 1;
 bool ndsp_ready = false;
-std::array<ndspWaveBuf, 2> wave_buffers{};
-std::array<sys::LinearBuffer, 2> wave_memory;
+std::array<ndspWaveBuf, cfg::AUDIO_BUFFERS> wave_buffers{};
+std::array<sys::LinearBuffer, cfg::AUDIO_BUFFERS> wave_memory;
 sys::Thread worker;
-
 std::size_t ogg_read(void *dest, std::size_t size, std::size_t count, void *source) {
   return std::fread(dest, size, count, static_cast<std::FILE *>(source));
 }
-
 int ogg_seek(void *source, ogg_int64_t offset, int whence) {
   if (offset < static_cast<ogg_int64_t>(std::numeric_limits<long>::min()) ||
       offset > static_cast<ogg_int64_t>(std::numeric_limits<long>::max())) {
@@ -35,23 +30,20 @@ int ogg_seek(void *source, ogg_int64_t offset, int whence) {
              ? -1
              : 0;
 }
-
 int ogg_close(void *source) {
   return std::fclose(static_cast<std::FILE *>(source));
 }
-
 long ogg_tell(void *source) {
   return std::ftell(static_cast<std::FILE *>(source));
 }
-
 const ov_callbacks CALLBACKS{&ogg_read, &ogg_seek, &ogg_close, &ogg_tell};
-
 bool load(const char *path) {
   ov_clear(&stream);
   sys::FileHandle file = sd::open(path, "rb");
   if (!file) {
     return false;
   }
+  (void)std::setvbuf(file.get(), nullptr, _IOFBF, 64 * 1024);
   if (ov_open_callbacks(file.get(), &stream, nullptr, 0, CALLBACKS) < 0) {
     file.close();
     return false;
@@ -59,7 +51,6 @@ bool load(const char *path) {
   (void)file.release();
   return true;
 }
-
 void play(bool loop) {
   loop_mode = loop;
   vorbis_info *info = ov_info(&stream, -1);
@@ -69,6 +60,9 @@ void play(bool loop) {
   channel_count = std::clamp(info->channels, 1, cfg::AUDIO_MAX_CHANNELS);
   sample_rate = info->rate;
   ndspChnReset(0);
+  for (ndspWaveBuf &buffer : wave_buffers) {
+    buffer.status = NDSP_WBUF_DONE;
+  }
   ndspChnSetFormat(0, channel_count == 1 ? NDSP_FORMAT_MONO_PCM16
                                          : NDSP_FORMAT_STEREO_PCM16);
   ndspChnSetRate(0, static_cast<float>(sample_rate));
@@ -78,7 +72,6 @@ void play(bool loop) {
   ndspSetOutputMode(NDSP_OUTPUT_STEREO);
   ndspSetMasterVol(1.0f);
 }
-
 int decode_frames(std::span<s16> destination, bool &reached_end) {
   reached_end = false;
   const int bytes_capacity = static_cast<int>(destination.size_bytes());
@@ -106,7 +99,6 @@ int decode_frames(std::span<s16> destination, bool &reached_end) {
   }
   return bytes_done / (channel_count * static_cast<int>(sizeof(s16)));
 }
-
 void thread_main(void *) {
   play(false);
   int current = 0;
@@ -116,7 +108,7 @@ void thread_main(void *) {
     if (!first_buffer) {
       while (buffer.status != NDSP_WBUF_DONE &&
              !should_stop.load(std::memory_order_acquire)) {
-        svcSleepThread(1'000'000ULL);
+        svcSleepThread(2'000'000ULL);
       }
       if (should_stop.load(std::memory_order_acquire)) {
         break;
@@ -131,14 +123,18 @@ void thread_main(void *) {
     const int frames = decode_frames(pcm, reached_end);
     const std::size_t decoded_samples =
         static_cast<std::size_t>(frames) * static_cast<std::size_t>(channel_count);
-    if (decoded_samples < sample_count) {
+    if (!reached_end && decoded_samples < sample_count) {
       const std::span<s16> tail = pcm.subspan(decoded_samples);
       std::memset(tail.data(), 0, tail.size_bytes());
     }
-    buffer.nsamples = cfg::AUDIO_BUF_SAMPLES;
+    buffer.nsamples = static_cast<u32>(reached_end ? decoded_samples : sample_count);
     buffer.status = NDSP_WBUF_DONE;
-    ndspChnWaveBufAdd(0, &buffer);
-    current ^= 1;
+    if (buffer.nsamples > 0) {
+      DSP_FlushDataCache(buffer.data_pcm16,
+                         static_cast<u32>(buffer.nsamples * sizeof(s16)));
+      ndspChnWaveBufAdd(0, &buffer);
+    }
+    current = (current + 1) % cfg::AUDIO_BUFFERS;
     if (!reached_end) {
       continue;
     }
@@ -153,15 +149,21 @@ void thread_main(void *) {
       status::print("Audio: loop.ogg missing");
       break;
     }
+    while (buffer.status != NDSP_WBUF_DONE &&
+           !should_stop.load(std::memory_order_acquire)) {
+      svcSleepThread(5'000'000ULL);
+    }
+    if (should_stop.load(std::memory_order_acquire)) {
+      break;
+    }
     play(true);
     first_buffer = true;
   }
 }
-
 void init() {
   status::print("Audio: starting...");
-  if (R_FAILED(ndspInit())) {
-    status::print("Audio: ndspInit failed");
+  if (R_FAILED(opendspInit())) {
+    status::print("Audio: opendspInit failed");
     return;
   }
   ndsp_ready = true;
@@ -206,13 +208,12 @@ void init() {
   }
   status::print("Audio: thread started");
 }
-
 void shutdown() {
   should_stop.store(true, std::memory_order_release);
   worker.join();
   if (ndsp_ready) {
     ndspChnReset(0);
-    ndspExit();
+    opendspExit();
     ndsp_ready = false;
   }
   ov_clear(&stream);
@@ -220,6 +221,5 @@ void shutdown() {
     block.reset();
   }
 }
-
-}  // namespace audio
-}  // namespace mm
+}
+}
