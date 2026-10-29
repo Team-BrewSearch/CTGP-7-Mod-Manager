@@ -1,30 +1,32 @@
 #pragma once
-
 #include <3ds.h>
 #include <citro2d.h>
 #include <curl/curl.h>
-
-#include "imgui/imgui.h"
-
+#include "imgui.h"
 #include <array>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
-
 static_assert(CHAR_BIT == 8, "Byte-oriented buffer maths assumes 8-bit bytes.");
 static_assert(sizeof(s16) == 2, "PCM16 framing assumes a 2-byte sample.");
 static_assert(sizeof(u16) == 2, "RGB565 texel packing assumes a 2-byte texel.");
-
 namespace mm {
 namespace cfg {
-
 inline constexpr std::string_view USER_AGENT = "CTGP-7-Mod-Manager/3.0";
 inline constexpr std::string_view API_V10_INDEX = "https://gamebanana.com/apiv10/Mod/Index";
 inline constexpr std::string_view API_CORE_DATA = "https://api.gamebanana.com/Core/Item/Data";
-inline constexpr std::string_view CA_BUNDLE_PATH = "romfs:/cacert.pem";
+inline constexpr std::string_view CA_BUNDLE_SD_DIR = "sdmc:/config/ssl/";
+inline constexpr std::string_view CA_BUNDLE_SD = "sdmc:/config/ssl/cacert.pem";
+inline constexpr std::string_view CA_BUNDLE_SD_TMP = "sdmc:/config/ssl/cacert.pem.tmp";
+inline constexpr std::string_view CA_BUNDLE_ETAG = "sdmc:/config/ssl/cacert.pem.etag";
+inline constexpr std::string_view CA_BUNDLE_ETAG_TMP = "sdmc:/config/ssl/cacert.pem.etag.tmp";
+inline constexpr std::string_view CA_BUNDLE_ROMFS = "romfs:/cacert.pem";
+inline constexpr std::string_view CA_BUNDLE_URL = "https://curl.se/ca/cacert.pem";
+inline constexpr std::string_view CA_BUNDLE_HASH_URL = "https://curl.se/ca/cacert.pem.sha256";
+inline constexpr std::size_t CA_BUNDLE_MIN_SIZE = 32 * 1024;
+inline constexpr std::size_t CA_BUNDLE_MAX_SIZE = 512 * 1024;
 inline constexpr std::string_view DOWNLOAD_BASE = "https://gamebanana.com/dl/";
-
 inline constexpr std::size_t SOC_ALIGN = 0x1000;
 inline constexpr std::size_t SOC_BUFFERSIZE = 0x100000;
 inline constexpr std::size_t MAX_RESPONSE_SIZE = 512 * 1024;
@@ -34,16 +36,15 @@ inline constexpr u64 THROTTLE_DELAY_NS = 1'500'000'000ULL;
 inline constexpr std::size_t FETCH_WORKERS = 6;
 inline constexpr std::size_t WORKER_STACK_SIZE = 128 * 1024;
 inline constexpr int WORKER_PRIORITY = 0x3F;
-inline constexpr int AUDIO_PRIORITY = 0x30;
 inline constexpr int ANY_CORE = -2;
 inline constexpr int INDEX_PER_PAGE = 50;
 inline constexpr int MAX_PAGES_PER_CAT = 200;
 inline constexpr std::size_t CORE_BATCH_SIZE = 50;
 inline constexpr std::size_t RESPONSE_RESERVE = 64 * 1024;
-inline constexpr std::array<int, 18> CATEGORIES{35931, 10605, 35932, 35943, 35933, 35935,
-                                                 35937, 35938, 35939, 35941, 35942, 35944,
-                                                 35946, 35947, 35945, 35940, 35934, 35936};
-
+inline constexpr int64_t FEED_MAX_AGE_SECONDS = 24 * 60 * 60;
+inline constexpr int MOD_LIST_VERSION = 1;
+inline constexpr std::array<int, 1> CATEGORIES{10604};
+inline constexpr std::array<int, 4> NON_CHARACTER_CATEGORIES{10608, 10619, 10620, 27891};
 inline constexpr std::string_view BASE_DIR = "sdmc:/";
 inline constexpr std::string_view APP_DIR = "sdmc:/3ds/CTGP-7-Mod-Manager/";
 inline constexpr std::string_view CACHE_DIR = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/";
@@ -51,24 +52,21 @@ inline constexpr std::string_view LISTS_DIR = "sdmc:/3ds/CTGP-7-Mod-Manager/cach
 inline constexpr std::string_view THUMB_DIR = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/images/";
 inline constexpr std::string_view CTGP7_DIR = "sdmc:/CTGP-7/MyStuff/Characters/";
 inline constexpr std::string_view LOG_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/output.log";
+inline constexpr std::size_t LOG_MAX_SIZE = 1024 * 1024;
 inline constexpr std::string_view MOD_LIST_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/lists/modlist.json";
-inline constexpr std::string_view BY_NAME_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/lists/byname.json";
-inline constexpr std::string_view BY_NAME_REVERSED_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/lists/bynamereversed.json";
-inline constexpr std::string_view BY_UPDATED_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/lists/byupdated.json";
-inline constexpr std::string_view BY_UPDATED_REVERSED_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/lists/byupdatedreversed.json";
 inline constexpr std::string_view INSTALLED_FILE = "sdmc:/3ds/CTGP-7-Mod-Manager/installed_mods.json";
 inline constexpr std::string_view INSTALLED_TMP = "sdmc:/3ds/CTGP-7-Mod-Manager/installed_mods.json.tmp";
 inline constexpr std::string_view DOWNLOAD_TMP = "sdmc:/3ds/CTGP-7-Mod-Manager/cache/download.tmp";
-
 inline constexpr int AUDIO_BUF_SAMPLES = 4096;
+inline constexpr int AUDIO_BUFFERS = 4;
 inline constexpr int AUDIO_MAX_CHANNELS = 2;
 inline constexpr int AUDIO_VOL = 0x50;
+inline constexpr int AUDIO_PRIORITY = 0x20;
 inline constexpr std::size_t AUDIO_BUF_BYTES = static_cast<std::size_t>(AUDIO_BUF_SAMPLES) *
                                               static_cast<std::size_t>(AUDIO_MAX_CHANNELS) *
                                               sizeof(s16);
 static_assert(AUDIO_MAX_CHANNELS >= 2,
               "play() clamps to 2 channels; wave buffers must be sized for that.");
-
 inline constexpr float TOP_W = 400.0f;
 inline constexpr float TOP_H = 240.0f;
 inline constexpr float BOT_W = 320.0f;
@@ -135,7 +133,6 @@ inline constexpr ImGuiWindowFlags SCREEN_WINDOW_FLAGS =
     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
-
 inline constexpr std::string_view CHPACK_SUFFIX = ".chpack";
 inline constexpr std::size_t INSTALL_NAME_MAX = 128;
 inline constexpr std::size_t INSTALL_MAX_FILES = 64;
@@ -144,12 +141,12 @@ inline constexpr int64_t INSTALL_MAX_FILE_BYTES = 64 * 1024 * 1024;
 inline constexpr int64_t INSTALL_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 inline constexpr std::size_t ARCHIVE_BLOCK_SIZE = 64 * 1024;
 inline constexpr curl_off_t DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
+inline constexpr int DOWNLOAD_ATTEMPTS = 3;
 inline constexpr long DL_CONNECT_TIMEOUT = 20L;
 inline constexpr long DL_LOW_SPEED_LIMIT = 1024L;
 inline constexpr long DL_LOW_SPEED_TIME = 30L;
 inline constexpr std::size_t INSTALL_STACK_SIZE = 256 * 1024;
 inline constexpr s64 INSTALL_IDLE_WAIT_NS = 50'000'000LL;
-
 inline constexpr int THUMB_IMG_W = 110;
 inline constexpr int THUMB_IMG_H = 62;
 inline constexpr int THUMB_JPEG_QUALITY = 50;
@@ -161,20 +158,19 @@ static_assert((THUMB_TEX_W & (THUMB_TEX_W - 1)) == 0, "PICA200 requires power-of
 static_assert((THUMB_TEX_H & (THUMB_TEX_H - 1)) == 0, "PICA200 requires power-of-two textures.");
 static_assert(THUMB_TEX_W >= THUMB_IMG_W && THUMB_TEX_H >= THUMB_IMG_H,
               "The texture must be able to hold the cached image.");
-
 inline constexpr int THUMB_SLOTS = 16;
 inline constexpr int THUMB_WORKERS = 3;
 inline constexpr int THUMB_QUEUE = CARDS_PER_PAGE;
 inline constexpr int THUMB_FAIL_RING = 64;
+inline constexpr int THUMB_FAIL_RETRY = 3;
+inline constexpr int THUMB_FAIL_EVICT_TICKS = 120;
 static_assert(THUMB_SLOTS > CARDS_PER_PAGE,
               "Eviction must always find a victim that is not currently on screen.");
-
 inline constexpr std::size_t THUMB_URL_MAX = 192;
 inline constexpr std::size_t THUMB_MAX_BYTES = 1024 * 1024;
 inline constexpr unsigned THUMB_SRC_MAX_DIM = 4096;
 inline constexpr std::size_t THUMB_SRC_MAX_PIXELS = 2'000'000;
 inline constexpr s64 THUMB_IDLE_WAIT_NS = 50'000'000LL;
-
 inline constexpr u32 CLR_BG = C2D_Color32(0x15, 0x1D, 0x23, 0xFF);
 inline constexpr u32 CLR_SEL_BG = C2D_Color32(0x2A, 0x3B, 0x47, 0xFF);
 inline constexpr u32 CLR_QUEUE = C2D_Color32(0x3B, 0x7A, 0xE0, 0xFF);
@@ -186,14 +182,12 @@ inline constexpr u32 CLR_AUTHOR = C2D_Color32(0x88, 0x88, 0x88, 0xFF);
 inline constexpr u32 CLR_ERROR = C2D_Color32(0xFF, 0x55, 0x55, 0xFF);
 inline constexpr u32 CLR_THUMB = C2D_Color32(0x00, 0x00, 0x00, 0xFF);
 inline constexpr u32 CLR_SEP = CLR_SEL_BG;
-
 [[nodiscard]] constexpr ImVec4 im_color(u8 r, u8 g, u8 b, u8 a = 0xFF) noexcept {
   return ImVec4(static_cast<float>(r) / 255.0f,
                 static_cast<float>(g) / 255.0f,
                 static_cast<float>(b) / 255.0f,
                 static_cast<float>(a) / 255.0f);
 }
-
 inline constexpr ImVec4 IM_WINDOW_BG = im_color(0x15, 0x1D, 0x23);
 inline constexpr ImVec4 IM_GOLD = im_color(0xAB, 0xA0, 0x22);
 inline constexpr ImVec4 IM_AMBER = im_color(0xFF, 0xC1, 0x07);
@@ -204,6 +198,5 @@ inline constexpr ImVec4 IM_BTN_HOT = im_color(0x38, 0x4E, 0x5D);
 inline constexpr ImVec4 IM_UNINST_BG = im_color(0x4A, 0x27, 0x27);
 inline constexpr ImVec4 IM_UNINST_HOT = im_color(0x63, 0x34, 0x34);
 inline constexpr ImVec4 IM_UNINST_FG = im_color(0xFF, 0x88, 0x88);
-
-}  // namespace cfg
-}  // namespace mm
+}
+}

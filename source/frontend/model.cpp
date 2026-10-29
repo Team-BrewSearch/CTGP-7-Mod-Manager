@@ -1,16 +1,12 @@
 #include "frontend/model.h"
-
 #include "core/config.h"
-
 #include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
 #include <utility>
-
 namespace mm {
 namespace model {
-
 AppState state = AppState::FETCHING;
 std::vector<ModData> mods;
 std::vector<ModData> all_mods;
@@ -25,18 +21,18 @@ bool cards_dirty = true;
 u32 nav_held_key = 0;
 float nav_timer = 0.0f;
 BottomOverlay bottom_overlay = BottomOverlay::NONE;
-
 namespace {
-
 std::string lowercase(std::string_view source);
-
 char lower_ascii(char c) noexcept {
   if (c >= 'A' && c <= 'Z') {
     return static_cast<char>(c + ('a' - 'A'));
   }
   return c;
 }
-
+/**
+ * Find an already ASCII-lowercased query in text, folding ASCII case in text only.
+ * An empty query matches; non-ASCII bytes are compared unchanged.
+ */
 bool contains_query(const std::string &text, const std::string &query) noexcept {
   if (query.empty()) {
     return true;
@@ -44,10 +40,12 @@ bool contains_query(const std::string &text, const std::string &query) noexcept 
   if (query.size() > text.size()) {
     return false;
   }
-  const std::string lowered = lowercase(text);
-  return lowered.find(query) != std::string::npos;
+  const auto match = [](char text_char, char query_char) {
+    return lower_ascii(text_char) == query_char;
+  };
+  return std::search(text.begin(), text.end(), query.begin(), query.end(),
+                     match) != text.end();
 }
-
 std::string lowercase(std::string_view source) {
   std::string result;
   result.reserve(source.size());
@@ -56,9 +54,7 @@ std::string lowercase(std::string_view source) {
   }
   return result;
 }
-
-}  // namespace
-
+}
 Priority priority_of(const ModData &mod) noexcept {
   const store::InstallRecord *record = store::installed.find(mod.id);
   if (record == nullptr) {
@@ -67,7 +63,6 @@ Priority priority_of(const ModData &mod) noexcept {
   return mod.latest_file_date > record->date ? Priority::UPDATE_AVAILABLE
                                              : Priority::INSTALLED;
 }
-
 void sort() {
   cards_dirty = true;
   const std::size_t count = mods.size();
@@ -102,11 +97,9 @@ void sort() {
   }
   mods = std::move(ordered);
 }
-
 int total_count() noexcept {
   return static_cast<int>(mods.size());
 }
-
 int visible_count() noexcept {
   const int remaining = total_count() - window_start;
   if (remaining <= 0) {
@@ -114,7 +107,6 @@ int visible_count() noexcept {
   }
   return std::min(remaining, cfg::CARDS_PER_PAGE);
 }
-
 int max_window_start() noexcept {
   const int total = total_count();
   if (total <= cfg::CARDS_PER_PAGE) {
@@ -124,7 +116,6 @@ int max_window_start() noexcept {
   const int start_row = rows - cfg::GRID_ROWS;
   return start_row > 0 ? start_row * cfg::GRID_COLS : 0;
 }
-
 const ModData *selected_mod() noexcept {
   const int visible = visible_count();
   if (visible <= 0 || selected < 0 || selected >= visible) {
@@ -132,12 +123,10 @@ const ModData *selected_mod() noexcept {
   }
   return &mods[static_cast<std::size_t>(window_start + selected)];
 }
-
 bool queued(int mod_id) noexcept {
   return std::ranges::any_of(queued_mod_ids,
                              [mod_id](int queued_id) { return queued_id == mod_id; });
 }
-
 void queue_selected() noexcept {
   const ModData *mod = selected_mod();
   if (mod == nullptr) {
@@ -149,7 +138,6 @@ void queue_selected() noexcept {
   }
   cards_dirty = true;
 }
-
 void toggle_selected_queue() noexcept {
   const ModData *mod = selected_mod();
   if (mod == nullptr) {
@@ -168,7 +156,6 @@ void toggle_selected_queue() noexcept {
   queued_mod_ids.push_back(mod->id);
   cards_dirty = true;
 }
-
 void remove_queued_mod(int mod_id) noexcept {
   const auto it = std::ranges::find(queued_mod_ids, mod_id);
   if (it != queued_mod_ids.end()) {
@@ -176,7 +163,6 @@ void remove_queued_mod(int mod_id) noexcept {
     cards_dirty = true;
   }
 }
-
 void clear_queued_mods() noexcept {
   if (queued_mod_ids.empty()) {
     return;
@@ -184,7 +170,6 @@ void clear_queued_mods() noexcept {
   queued_mod_ids.clear();
   cards_dirty = true;
 }
-
 ModAction current_action() noexcept {
   const ModData *mod = selected_mod();
   if (mod == nullptr) {
@@ -196,11 +181,9 @@ ModAction current_action() noexcept {
   }
   return mod->latest_file_date > record->date ? ModAction::UPDATE : ModAction::INSTALLED;
 }
-
 bool searching() noexcept {
   return !search_query.empty();
 }
-
 void apply_search(const std::string &query) {
   search_query = query;
   const std::string lowered = query.empty() ? std::string{} : lowercase(query);
@@ -219,17 +202,44 @@ void apply_search(const std::string &query) {
   selected = 0;
   cards_dirty = true;
 }
-
 void clear_search() {
   apply_search("");
 }
-
+void replace_all(std::vector<ModData> &&fresh) {
+  all_mods = std::move(fresh);
+  if (searching()) {
+    apply_search(search_query);
+  } else {
+    mods = all_mods;
+    sort();
+    window_start = 0;
+    selected = 0;
+  }
+  cards_dirty = true;
+}
+void select_mod_id(int mod_id) noexcept {
+  cards_dirty = true;
+  if (mod_id == 0 || mods.empty()) {
+    clamp_view();
+    return;
+  }
+  const auto it =
+      std::ranges::find_if(mods, [mod_id](const ModData &mod) { return mod.id == mod_id; });
+  if (it == mods.end()) {
+    clamp_view();
+    return;
+  }
+  const int index = static_cast<int>(it - mods.begin());
+  const int row = index / cfg::GRID_COLS;
+  window_start = std::clamp(row * cfg::GRID_COLS, 0, max_window_start());
+  const int visible = visible_count();
+  selected = visible > 0 ? std::clamp(index - window_start, 0, visible - 1) : 0;
+}
 void clamp_view() noexcept {
   window_start = std::clamp(window_start, 0, max_window_start());
   const int visible = visible_count();
   selected = visible > 0 ? std::clamp(selected, 0, visible - 1) : 0;
 }
-
 void resort_after_change() {
   if (searching()) {
     apply_search(search_query);
@@ -239,7 +249,6 @@ void resort_after_change() {
   clamp_view();
   cards_dirty = true;
 }
-
 bool scroll(int rows) noexcept {
   const int before = window_start;
   window_start = std::clamp(window_start + rows * cfg::GRID_COLS, 0, max_window_start());
@@ -251,7 +260,6 @@ bool scroll(int rows) noexcept {
   cards_dirty = true;
   return true;
 }
-
 void handle_nav(u32 keys) noexcept {
   const int visible = visible_count();
   if (visible <= 0) {
@@ -285,7 +293,6 @@ void handle_nav(u32 keys) noexcept {
   }
   (void)scroll(row_delta);
 }
-
 u32 nav_repeat(u32 pressed, u32 held, float delta_seconds) noexcept {
   constexpr u32 NAV_MASK = KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT |
                            KEY_CPAD_UP | KEY_CPAD_DOWN | KEY_CPAD_LEFT | KEY_CPAD_RIGHT;
@@ -308,7 +315,6 @@ u32 nav_repeat(u32 pressed, u32 held, float delta_seconds) noexcept {
   }
   return nav_held_key;
 }
-
 void set_sort_mode(bool by_name) {
   if (sort_by_name == by_name) {
     return;
@@ -319,7 +325,6 @@ void set_sort_mode(bool by_name) {
   selected = 0;
   cards_dirty = true;
 }
-
 void toggle_sort_reversed() {
   sort_reversed = !sort_reversed;
   sort();
@@ -327,6 +332,5 @@ void toggle_sort_reversed() {
   selected = 0;
   cards_dirty = true;
 }
-
-}  // namespace model
-}  // namespace mm
+}
+}

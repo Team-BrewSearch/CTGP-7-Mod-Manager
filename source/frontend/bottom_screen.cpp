@@ -1,29 +1,25 @@
 #include "frontend/bottom_screen.h"
-
 #include "backend/install.h"
 #include "core/config.h"
 #include "core/format.h"
+#include "core/progress.h"
+#include "core/status.h"
 #include "core/text.h"
+#include "core/time.h"
 #include "core/log.h"
 #include "frontend/app.h"
-
 #include <algorithm>
-#include <atomic>
-
 namespace mm {
 namespace draw {
-
 float measure_imgui(const char *content) {
   return ImGui::CalcTextSize(content).x;
 }
-
 void text_centered(const char *content, const ImVec4 &color, float y) {
   const float width = ImGui::CalcTextSize(content).x;
   ImGui::SetCursorPosX((cfg::BOT_W - width) * 0.5f);
   ImGui::SetCursorPosY(y);
   ImGui::TextColored(color, "%s", content);
 }
-
 void bottom_status(const std::string &content, bool failed) {
   log_event(content);
   ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
@@ -44,11 +40,11 @@ void bottom_status(const std::string &content, bool failed) {
     ImGui::PopTextWrapPos();
   }
   if (failed) {
-    text_centered("Press START to exit.", cfg::IM_AUTHOR, cfg::BOT_H - 40.0f);
+    text_centered("Press SELECT to retry, or START to exit.", cfg::IM_AUTHOR,
+                  cfg::BOT_H - 40.0f);
   }
   ImGui::End();
 }
-
 std::string action_label(model::ModAction action, const store::ModData *mod) {
   if (!model::queued_mod_ids.empty()) {
     const std::size_t queued_count = model::queued_mod_ids.size();
@@ -72,7 +68,6 @@ std::string action_label(model::ModAction action, const store::ModData *mod) {
   return fmt::format("{}{}", action == model::ModAction::UPDATE ? "Update " : "Install ",
                      mod->name);
 }
-
 void wrap_lines(std::string_view content, float wrap_width, int max_lines,
                 std::vector<std::string> &out) {
   out.clear();
@@ -100,7 +95,6 @@ void wrap_lines(std::string_view content, float wrap_width, int max_lines,
     }
   }
 }
-
 bool wrapped_button(const char *id, const std::string &label, float y,
                     float height, const ImVec4 &background,
                     const ImVec4 &background_hot, const ImVec4 &foreground,
@@ -131,9 +125,7 @@ bool wrapped_button(const char *id, const std::string &label, float y,
   }
   return pressed;
 }
-
 enum class CornerIcon { NONE, MAGNIFIER, X, QUESTION_MARK };
-
 bool corner_button(const char *id, float x, float y, CornerIcon icon,
                    const ImVec4 &background, const ImVec4 &background_hot,
                    const ImVec4 &foreground) {
@@ -184,7 +176,6 @@ bool corner_button(const char *id, float x, float y, CornerIcon icon,
   }
   return pressed;
 }
-
 void draw_sort_options() {
   text_centered("Sort Options", cfg::IM_GOLD, cfg::SORT_LABEL_Y);
   const ImGuiStyle &style = ImGui::GetStyle();
@@ -231,7 +222,6 @@ void draw_sort_options() {
                       ImVec2(cx, cy + half_h), arrow_color, 1.5f);
   }
 }
-
 void draw_progress_bar() {
   ImDrawList *list = ImGui::GetWindowDrawList();
   list->AddRectFilled(ImVec2(cfg::BTN_X, cfg::PROG_BAR_Y),
@@ -246,23 +236,26 @@ void draw_progress_bar() {
                       ImVec2(cfg::BTN_X + filled, cfg::PROG_BAR_Y + cfg::PROG_BAR_H),
                       ImGui::GetColorU32(cfg::IM_GOLD));
 }
-
 void bottom_browse() {
   ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
   ImGui::SetNextWindowSize(ImVec2(cfg::BOT_W, cfg::BOT_H));
   ImGui::Begin("##browse", nullptr, cfg::SCREEN_WINDOW_FLAGS);
-  // If an overlay is active, draw it full-screen and ignore other controls.
   if (model::bottom_overlay == model::BottomOverlay::ABOUT) {
     ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-    static const char *about_content = "CTGP-7 Mod Manager: A 3DS homebrew app to manage CTGP-7 mods.\n\nCredits: NitroShell (Lead/Code), bonkmaykr (Code/Audio/Logo), MisakiP_ (Code/QA), Straky (Icon/QA), Epic0522(Banner Fix), Orj_Osc (QA), gameonion (CTGP-7 Logo).\n\nProvided as-is. Use at your own risk.";
+    static const char *about_content =
+        "Manage CTGP-7 mods from GameBanana.\n\n"
+        "Credits: NitroShell, bonkmaykr,\n"
+        "MisakiP_, Straky, Epic0522,\n"
+        "Orj_Osc, gameonion.\n"
+        "Use at your own risk.";
     text_centered("About / Credits", cfg::IM_GOLD, 16.0f);
     ImGui::SetCursorPos(ImVec2(12.0f, 36.0f));
     ImGui::PushTextWrapPos(12.0f + (cfg::BOT_W - 24.0f));
     ImGui::TextWrapped(about_content);
     ImGui::PopTextWrapPos();
-    const float close_y = cfg::BOT_H - (cfg::ACTION_BTN_H + 12.0f);
+    const float close_y = cfg::BOT_H - (cfg::ACTION_BTN_H + 8.0f);
     ImGui::BeginDisabled(false);
-    if (wrapped_button("##about_close", "Close", close_y, cfg::ACTION_BTN_H,
+    if (wrapped_button("##about_close", "Close  [B]", close_y, cfg::ACTION_BTN_H,
                        cfg::IM_BTN_BG, cfg::IM_BTN_HOT, cfg::IM_GOLD, 2.0f)) {
       model::bottom_overlay = model::BottomOverlay::NONE;
     }
@@ -287,7 +280,6 @@ void bottom_browse() {
     ImGui::End();
     return;
   }
-
   draw_sort_options();
   ImGui::GetWindowDrawList()->AddRectFilled(
       ImVec2(cfg::BTN_X, cfg::SEP_Y),
@@ -329,8 +321,24 @@ void bottom_browse() {
         (total > 0 && model::selected_mod() != nullptr)
             ? model::window_start + model::selected + 1
             : 0;
-    const std::string counter = fmt::format("{}/{}", current, total);
-    text_centered(counter.c_str(), cfg::IM_AUTHOR, cfg::COUNTER_Y);
+    const std::string age = timeutil::format_age(status::last_feed_time());
+    const bool have_age = age != "unknown";
+    std::string state;
+    if (!status::feed_finished()) {
+      const int done = progress::jobs_done.load(std::memory_order_acquire);
+      const int total = progress::jobs_total.load(std::memory_order_acquire);
+      state = total > 0 ? fmt::format("updating {}/{}", done, total) : "updating";
+    } else if (!status::feed_succeeded()) {
+      state = have_age ? fmt::format("refresh failed; list from {}", age) : "refresh failed";
+    } else {
+      state = have_age ? fmt::format("updated {}", age) : "updated unknown";
+    }
+    const std::string counter = fmt::format("{}/{}  |  {}", current, total, state);
+    const ImVec4 &counter_color =
+        !status::feed_finished()
+            ? cfg::IM_AMBER
+            : (status::feed_succeeded() ? cfg::IM_AUTHOR : cfg::IM_ERROR);
+    text_centered(counter.c_str(), counter_color, cfg::COUNTER_Y);
   }
   if (!install::user_message.empty()) {
     std::vector<std::string> lines;
@@ -350,14 +358,15 @@ void bottom_browse() {
         text_centered("[B] Cancel  [START] Exit", cfg::IM_AUTHOR, cfg::HINT2_Y);
       }
     } else {
-      text_centered("[START] Exit", cfg::IM_AUTHOR, cfg::HINT2_Y);
+      const bool failed = status::feed_finished() && !status::feed_succeeded();
+      text_centered("[SELECT] Refresh  |  [START] Exit", failed ? cfg::IM_ERROR : cfg::IM_AUTHOR,
+                    cfg::HINT2_Y);
     }
   }
   if (model::searching()) {
     text_centered(fmt::format("Filter: \"{}\"", model::search_query).c_str(),
                   cfg::IM_AMBER, cfg::SEARCH_Y);
   }
-
   const bool search_pressed =
       corner_button("##search", cfg::CORNER_BTN_X, cfg::CORNER_BTN_Y,
                     CornerIcon::MAGNIFIER, cfg::IM_BTN_BG, cfg::IM_BTN_HOT,
@@ -365,7 +374,6 @@ void bottom_browse() {
   if (search_pressed) {
     app::run_search_dialog();
   }
-  // About / Credits button in top-right corner of the bottom screen.
   const float about_x = cfg::BOT_W - cfg::CORNER_BTN_W - cfg::CORNER_BTN_X;
   const bool about_pressed = corner_button("##about", about_x, cfg::CORNER_BTN_Y,
                                           CornerIcon::QUESTION_MARK, cfg::IM_BTN_BG,
@@ -373,7 +381,6 @@ void bottom_browse() {
   if (about_pressed) {
     model::bottom_overlay = model::BottomOverlay::ABOUT;
   }
-
   if (model::searching()) {
     const bool clear_pressed =
         corner_button("##clear", cfg::CLEAR_BTN_X, cfg::CLEAR_BTN_Y,
@@ -385,6 +392,5 @@ void bottom_browse() {
   }
   ImGui::End();
 }
-
-}  // namespace draw
-}  // namespace mm
+}
+}

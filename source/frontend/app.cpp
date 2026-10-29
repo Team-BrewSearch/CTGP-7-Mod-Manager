@@ -1,8 +1,8 @@
 #include "frontend/app.h"
-
 #include "backend/audio.h"
 #include "backend/feed.h"
 #include "backend/install.h"
+#include "backend/net.h"
 #include "backend/sd_card.h"
 #include "backend/store.h"
 #include "core/config.h"
@@ -11,16 +11,13 @@
 #include "frontend/model.h"
 #include "frontend/thumbnail_cache.h"
 #include "frontend/top_screen.h"
-
 #include <citro2d.h>
 #include <curl/curl.h>
 #include <malloc.h>
-
 #include <cfloat>
-
+#include <utility>
 namespace mm {
 namespace app {
-
 void run_search_dialog() {
   SwkbdState swkbd;
   swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, cfg::SEARCH_MAX_LEN);
@@ -36,18 +33,10 @@ void run_search_dialog() {
     model::apply_search(output);
   }
 }
-
 bool enter_browse_state() {
   (void)store::load_installed();
-  const char *preferred =
-      model::sort_by_name
-          ? (model::sort_reversed ? cfg::BY_NAME_REVERSED_FILE.data() : cfg::BY_NAME_FILE.data())
-          : (model::sort_reversed ? cfg::BY_UPDATED_REVERSED_FILE.data()
-                                  : cfg::BY_UPDATED_FILE.data());
-  if (!store::read_mod_list(preferred, model::mods) || model::mods.empty()) {
-    (void)store::read_mod_list(cfg::MOD_LIST_FILE.data(), model::mods);
-  }
-  if (model::mods.empty()) {
+  if (!store::read_mod_list(cfg::MOD_LIST_FILE.data(), model::mods) ||
+      model::mods.empty()) {
     return false;
   }
   model::window_start = 0;
@@ -59,7 +48,21 @@ bool enter_browse_state() {
   (void)install::init();
   return true;
 }
-
+/**
+ * Reload a nonempty cached list, retaining the search, sort, and selected mod when present.
+ * Return false without replacing the current list if the cache is unreadable or empty.
+ */
+bool reload_browse_state() {
+  const store::ModData *previous = model::selected_mod();
+  const int selected_id = previous != nullptr ? previous->id : 0;
+  std::vector<store::ModData> fresh;
+  if (!store::read_mod_list(cfg::MOD_LIST_FILE.data(), fresh) || fresh.empty()) {
+    return false;
+  }
+  model::replace_all(std::move(fresh));
+  model::select_mod_id(selected_id);
+  return true;
+}
 void advance_state(bool feed_done) {
   if (model::state == model::AppState::FETCHING && feed_done) {
     model::state = model::AppState::LOADING;
@@ -76,21 +79,22 @@ void advance_state(bool feed_done) {
   model::state = model::AppState::FAILED;
   model::error_text = "Failed to load mods.";
 }
-
 void handle_browse_input(u32 nav_keys, u32 pressed) {
-  if (model::bottom_overlay == model::BottomOverlay::ABOUT ||
-      install::is_uninstall_pending()) {
-    if (install::is_uninstall_pending()) {
-      if (pressed & KEY_A) {
-        install::confirm_uninstall();
-      }
-      if (pressed & KEY_B) {
-        install::cancel_uninstall_pending();
-      }
+  if (model::bottom_overlay == model::BottomOverlay::ABOUT) {
+    if (pressed & KEY_B) {
+      model::bottom_overlay = model::BottomOverlay::NONE;
     }
     return;
   }
-
+  if (install::is_uninstall_pending()) {
+    if (pressed & KEY_A) {
+      install::confirm_uninstall();
+    }
+    if (pressed & KEY_B) {
+      install::cancel_uninstall_pending();
+    }
+    return;
+  }
   model::handle_nav(nav_keys);
   if (nav_keys != 0) {
     install::user_message.clear();
@@ -129,11 +133,9 @@ void handle_browse_input(u32 nav_keys, u32 pressed) {
     model::toggle_selected_queue();
   }
 }
-
 Platform::~Platform() {
   shutdown();
 }
-
 bool Platform::init() {
   gfxInitDefault();
   C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
@@ -143,8 +145,16 @@ bool Platform::init() {
   status::print("Starting up...");
   return init_screens() && init_romfs() && init_audio_and_network();
 }
-
 void Platform::run() {
+  bool cache_attempted = false;
+  bool feed_reloaded = false;
+  bool force_redraw = true;
+  model::AppState last_state = model::state;
+  model::BottomOverlay last_overlay = model::bottom_overlay;
+  u32 last_status_revision = status::revision();
+  int last_install_percent = install::percent.load(std::memory_order_acquire);
+  float busy_redraw_timer = 0.0f;
+  std::string status_line;
   while (aptMainLoop()) {
     hidScanInput();
     const u32 pressed = hidKeysDown();
@@ -152,20 +162,81 @@ void Platform::run() {
     const u32 released = hidKeysUp();
     const float delta = tick_clock();
     update_pointer(held, released);
+    const bool was_browsing = model::state == model::AppState::BROWSING;
     const bool feed_done = status::feed_finished();
     advance_state(feed_done);
-    const std::string status_line = status::current();
-    if (feed_done && (pressed & KEY_START)) {
+    if (feed_done && !feed_reloaded && !install::busy() &&
+        !install::is_uninstall_pending()) {
+      feed_reloaded = true;
+      force_redraw = true;
+      if (was_browsing && model::state == model::AppState::BROWSING &&
+          status::feed_updated()) {
+        (void)reload_browse_state();
+      }
+    }
+    const bool browsing = model::state == model::AppState::BROWSING;
+    if ((pressed & KEY_START) && (feed_done || browsing)) {
       break;
     }
-    if (model::state == model::AppState::BROWSING) {
-      install::tick();
-      handle_browse_input(model::nav_repeat(pressed, held, delta), pressed);
+    if (browsing && (pressed & KEY_SELECT) && status::feed_finished() &&
+        !install::busy() && !install::is_uninstall_pending() &&
+        model::bottom_overlay == model::BottomOverlay::NONE) {
+      feed_reloaded = false;
+      force_redraw = true;
+      (void)start_feed(true);
+    } else if (model::state == model::AppState::FAILED && (pressed & KEY_SELECT) &&
+               status::feed_finished()) {
+      model::state = model::AppState::FETCHING;
+      model::error_text.clear();
+      status::print("Refreshing list...");
+      force_redraw = true;
+      (void)start_feed(true);
     }
-    render(status_line);
+    u32 nav = 0;
+    if (browsing) {
+      if (install::tick()) {
+        force_redraw = true;
+      }
+      nav = model::nav_repeat(pressed, held, delta);
+      handle_browse_input(nav, pressed);
+    }
+    const bool install_active = install::busy();
+    const int install_percent = install::percent.load(std::memory_order_acquire);
+    const bool install_progress = install_active && install_percent != last_install_percent;
+    last_install_percent = install_percent;
+    busy_redraw_timer = install_active ? busy_redraw_timer + delta : 0.0f;
+    const bool install_repaint =
+        install_active && (install_progress || busy_redraw_timer >= 0.1f);
+    if (install_repaint) {
+      busy_redraw_timer = 0.0f;
+    }
+    const bool touch_active = (held & KEY_TOUCH) != 0;
+    const bool needs_redraw =
+        force_redraw || (pressed | released) != 0 || touch_active || nav != 0 ||
+        model::state != last_state || model::bottom_overlay != last_overlay ||
+        install_repaint ||
+        (browsing && (model::cards_dirty || thumbs::has_arrivals())) ||
+        status::revision() != last_status_revision;
+    if (needs_redraw) {
+      const u32 revision = status::revision();
+      status_line = status::current();
+      last_status_revision = revision;
+      last_state = model::state;
+      last_overlay = model::bottom_overlay;
+      force_redraw = false;
+      render(status_line);
+    } else {
+      svcSleepThread(16'000'000ULL);
+    }
+    if (!cache_attempted) {
+      cache_attempted = true;
+      if (model::state == model::AppState::FETCHING && enter_browse_state()) {
+        model::state = model::AppState::BROWSING;
+        force_redraw = true;
+      }
+    }
   }
 }
-
 bool Platform::init_screens() {
   top_ = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
   bottom_ = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
@@ -193,20 +264,14 @@ bool Platform::init_screens() {
   }
   return true;
 }
-
 bool Platform::init_romfs() {
   if (R_FAILED(romfsInit())) {
-    status::print("romfsInit failed - no CA bundle!");
+    status::print("romfsInit failed!");
     return false;
   }
   romfs_ready_ = true;
-  if (!sd::exists(cfg::CA_BUNDLE_PATH.data())) {
-    status::print("Fatal: CA bundle missing from ROMFS");
-    return false;
-  }
   return true;
 }
-
 bool Platform::init_audio_and_network() {
   audio::init();
   soc_buffer_.reset(static_cast<u32 *>(memalign(cfg::SOC_ALIGN, cfg::SOC_BUFFERSIZE)));
@@ -226,15 +291,25 @@ bool Platform::init_audio_and_network() {
     return false;
   }
   curl_ready_ = true;
-  feed_thread_ = sys::Thread::spawn(&feed::thread_main, nullptr, 128 * 1024,
+  net::init_ca_bundle();
+  return start_feed(false);
+}
+bool Platform::start_feed(bool force) {
+  feed::quit_requested.store(true, std::memory_order_release);
+  feed_thread_.join();
+  feed::quit_requested.store(false, std::memory_order_release);
+  status::begin_feed();
+  static int force_marker = 0;
+  void *arg = force ? &force_marker : nullptr;
+  feed_thread_ = sys::Thread::spawn(&feed::thread_main, arg, cfg::WORKER_STACK_SIZE,
                                     cfg::WORKER_PRIORITY, cfg::ANY_CORE);
   if (!feed_thread_) {
     status::print("Fatal: failed to create fetch thread");
+    status::mark_feed_done(false, false);
     return false;
   }
   return true;
 }
-
 float Platform::tick_clock() noexcept {
   osTickCounterUpdate(&frame_timer_);
   float delta = static_cast<float>(osTickCounterRead(&frame_timer_) * 0.001);
@@ -245,7 +320,6 @@ float Platform::tick_clock() noexcept {
   io_->DeltaTime = delta;
   return delta;
 }
-
 void Platform::update_pointer(u32 held, u32 released) noexcept {
   touchPosition touch{};
   hidTouchRead(&touch);
@@ -259,7 +333,6 @@ void Platform::update_pointer(u32 held, u32 released) noexcept {
     io_->MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
   }
 }
-
 void Platform::render(const std::string &status_line) {
   ImGui::NewFrame();
   if (model::state == model::AppState::BROWSING) {
@@ -286,7 +359,6 @@ void Platform::render(const std::string &status_line) {
   C2D_Flush();
   C3D_FrameEnd(0);
 }
-
 void Platform::shutdown() noexcept {
   feed::quit_requested.store(true, std::memory_order_release);
   feed_thread_.join();
@@ -323,6 +395,5 @@ void Platform::shutdown() noexcept {
     graphics_ready_ = false;
   }
 }
-
-}  // namespace app
-}  // namespace mm
+}
+}
