@@ -515,7 +515,7 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
   if (cancelled(cancel)) {
     return false;
   }
-  bool fetched_unverified = false;
+  bool fetched_unverified = !have_store;
   if (have_store &&
       (outcome == CURLE_PEER_FAILED_VERIFICATION || outcome == CURLE_SSL_CACERT_BADFILE)) {
     log_event("CA bundle: certificate check failed; retrying unverified with hash verification");
@@ -558,7 +558,7 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
     }
   }
   if (hash_outcome != CURLE_OK || hash_status != 200) {
-    if (!have_store || fetched_unverified) {
+    if (fetched_unverified) {
       log_event("CA bundle: hash fetch unavailable; keeping shipped anchor");
       return false;
     }
@@ -569,6 +569,10 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
   if (!hash_body.empty()) {
     const std::size_t first_space = hash_body.find_first_of(" \t\r\n");
     hash_hex = hash_body.substr(0, first_space);
+  }
+  if (fetched_unverified && hash_hex.empty()) {
+    log_event("CA bundle: hash unavailable for unverified download");
+    return false;
   }
   if (!install_ca_bundle(body, hash_hex)) {
     return false;
