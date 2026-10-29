@@ -3,6 +3,7 @@
 #include <charconv>
 #include <concepts>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -26,13 +27,17 @@ constexpr std::size_t count_placeholders(std::string_view text) noexcept {
 consteval std::size_t count_placeholders(const char *literal) noexcept {
   return count_placeholders(std::string_view(literal));
 }
+[[noreturn]] inline void placeholder_count_error() noexcept {
+  std::abort();
+}
  template <typename... Args>
  class Spec {
   public:
    template <std::size_t N>
    consteval Spec(const char (&literal)[N]) : text_{literal, N - 1} {
-     static_assert(count_placeholders(literal) == sizeof...(Args),
-                   "format string has wrong number of placeholders");
+     if (count_placeholders(literal) != sizeof...(Args)) {
+       placeholder_count_error();
+     }
    }
   [[nodiscard]] constexpr std::string_view view() const noexcept {
     return text_;

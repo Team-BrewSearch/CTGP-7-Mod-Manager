@@ -25,14 +25,26 @@ jobs:
       - name: Install devkitPro
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget libarchive-tools
-          wget -q -O - https://github.com/devkitPro/pacman/releases/latest/download/devkitpro-pacman.amd64.deb | sudo dpkg -i -
+          sudo apt-get install -y wget libarchive-tools unzip
+          wget -q -U "dkp-apt" -O devkitpro-pacman.deb https://apt.devkitpro.org/pool/main/devkitpro-pacman_6.0.1-2_amd64.deb
+          sudo dpkg -i devkitpro-pacman.deb
       - name: Install 3DS toolchain and portlibs
         run: |
           export DEVKITARM=/opt/devkitpro/devkitARM
           export DEVKITPRO=/opt/devkitpro
-          dkp-pacman -Sy --noconfirm
-          dkp-pacman -S --noconfirm 3ds-dev bannertool makerom 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
+          sudo dkp-pacman -Sy --noconfirm
+          sudo dkp-pacman -S --noconfirm 3ds-dev 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
+      - name: Install bannertool and makerom
+        run: |
+          wget -q -O bannertool.tar.gz https://github.com/carstene1ns/3ds-bannertool/releases/download/1.2.3/bannertool-1.2.3-linux.tar.gz
+          mkdir -p bannertool
+          tar -xzf bannertool.tar.gz -C bannertool --strip-components=1
+          sudo install -m 755 bannertool/bannertool /usr/local/bin/bannertool
+          wget -q -O makerom.zip https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.19.0/makerom-v0.19.0-ubuntu_x86_64.zip
+          unzip -q makerom.zip -d makerom
+          sudo install -m 755 makerom/makerom /usr/local/bin/makerom
+          command -v bannertool
+          command -v makerom
       - name: Build
         run: |
           export DEVKITARM=/opt/devkitpro/devkitARM

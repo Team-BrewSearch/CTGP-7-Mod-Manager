@@ -392,12 +392,19 @@ namespace {
 CURLcode fetch_ca_bundle(bool verify, const std::string &url,
                          const std::string &cached_etag, std::string &body,
                          std::string &reply_etag, long &status,
-                         const std::atomic<bool> *cancel) {
+                         const std::atomic<bool> *cancel, const char *ca_override = nullptr) {
   CURL *curl = curl_easy_init();
   if (curl == nullptr) {
     return CURLE_FAILED_INIT;
   }
   configure(curl);
+  if (ca_override != nullptr) {
+    const CURLcode outcome = curl_easy_setopt(curl, CURLOPT_CAINFO, ca_override);
+    if (outcome != CURLE_OK) {
+      curl_easy_cleanup(curl);
+      return outcome;
+    }
+  }
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, &capture_etag_header);
@@ -538,6 +545,17 @@ bool refresh_ca_bundle(const std::atomic<bool> *cancel) {
       fetch_ca_bundle(true, cfg::CA_BUNDLE_HASH_URL.data(), std::string{}, hash_body, hash_etag, hash_status, cancel);
   if (cancelled(cancel)) {
     return false;
+  }
+  if (have_store && (hash_outcome != CURLE_OK || hash_status != 200)) {
+    log_event("CA bundle: hash fetch failed; retrying with shipped anchor");
+    hash_body.clear();
+    hash_etag.clear();
+    hash_outcome = fetch_ca_bundle(true, cfg::CA_BUNDLE_HASH_URL.data(), std::string{},
+                                   hash_body, hash_etag, hash_status, cancel,
+                                   cfg::CA_BUNDLE_ROMFS.data());
+    if (cancelled(cancel)) {
+      return false;
+    }
   }
   if (hash_outcome != CURLE_OK || hash_status != 200) {
     if (!have_store || fetched_unverified) {
