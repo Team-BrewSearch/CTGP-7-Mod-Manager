@@ -239,8 +239,11 @@ void confirm_uninstall() {
   }
   model::resort_after_change();
   if (files.empty()) {
-    record->uninstalling = false;
-    (void)store::save_installed();
+    store::installed.erase(mod_id);
+    if (!store::save_installed()) {
+      status::print("Warning: could not save installed mods list.");
+    }
+    model::resort_after_change();
     user_message.clear();
     return;
   }

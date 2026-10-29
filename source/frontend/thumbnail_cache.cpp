@@ -58,7 +58,9 @@ bool is_resident(int mod_id) noexcept {
 bool has_failed(int mod_id) noexcept {
   if (mod_id == 0) return true;
   for (int i = 0; i < failure_count; ++i) {
-    if (failures[i].first == mod_id) return true;
+    if (failures[i].first == mod_id) {
+      return failures[i].second >= cfg::THUMB_FAIL_RETRY;
+    }
   }
   return false;
 }

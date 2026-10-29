@@ -46,7 +46,7 @@ extern u32 frame_counter;
 extern bool ready;
 [[nodiscard]] bool is_wanted(int mod_id) noexcept;
 [[nodiscard]] bool is_resident(int mod_id) noexcept;
-/** Return whether the failure ring contains mod_id; zero is always treated as failed. */
+/** Return whether mod_id reached THUMB_FAIL_RETRY; zero is always treated as failed. */
 [[nodiscard]] bool has_failed(int mod_id) noexcept;
 /**
  * Record a nonzero mod failure, capping its count at THUMB_FAIL_RETRY.

@@ -103,7 +103,8 @@ void request_uninstall();
 /**
  * Clear confirmation and start removing the selected installed mod when idle.
  * Persist its uninstall marker before scheduling deletion; a failed save restores
- * the marker and aborts. A record with no files is retained with its marker cleared.
+ * the marker and aborts. A record with no files is erased and saved immediately;
+ * a failed removal save reports a warning. Resort the view after registry changes.
  */
 void confirm_uninstall();
 void cancel_uninstall_pending();

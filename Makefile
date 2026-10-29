@@ -108,6 +108,12 @@ endif
 .PHONY: all clean
 
 all: $(BUILD) $(DEPSDIR)
+	@# Regenerate dependencies and objects that still reference the old ImGui layout.
+	@for dep in $(wildcard $(DEPSDIR)/*.d); do \
+		if grep -q 'imgui/imgui/' "$$dep"; then \
+			rm -f "$$dep" "$${dep%.d}.o"; \
+		fi; \
+	done
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 $(BUILD):

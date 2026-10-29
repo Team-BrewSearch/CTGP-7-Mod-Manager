@@ -27,9 +27,15 @@ std::string timestamp() noexcept {
 }
 void log_event(const std::string &text) {
   const std::scoped_lock guard{log_mutex};
+  if (logfile && text == last_text) {
+    return;
+  }
+  const std::optional<int64_t> size = sd::file_size(cfg::LOG_FILE.data());
+  const bool truncate = size.has_value() && *size >= static_cast<int64_t>(cfg::LOG_MAX_SIZE);
+  if (truncate) {
+    (void)logfile.close();
+  }
   if (!logfile) {
-    const std::optional<int64_t> size = sd::file_size(cfg::LOG_FILE.data());
-    const bool truncate = size.has_value() && *size > static_cast<int64_t>(cfg::LOG_MAX_SIZE);
     std::FILE *handle = std::fopen(cfg::LOG_FILE.data(), truncate ? "w" : "a");
     logfile = sys::FileHandle{handle};
     if (!logfile) {
