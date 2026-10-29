@@ -26,13 +26,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget libarchive-tools
-          wget -q -O - https://github.com/devkitPro/pacman/releases/latest/download/devkitpro-pacman.amd64.deb | sudo dpkg -i -
+          wget -q -O - https://apt.devkitpro.org/install-devkitpro-pacman | sudo sh -x
       - name: Install 3DS toolchain and portlibs
         run: |
           export DEVKITARM=/opt/devkitpro/devkitARM
           export DEVKITPRO=/opt/devkitpro
-          dkp-pacman -Sy --noconfirm
-          dkp-pacman -S --noconfirm 3ds-dev bannertool makerom 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
+          sudo dkp-pacman -Sy --noconfirm
+          sudo dkp-pacman -S --noconfirm 3ds-dev bannertool makerom 3ds-curl 3ds-libjson-c 3ds-libvorbisidec 3ds-libjpeg-turbo 3ds-libarchive
       - name: Build
         run: |
           export DEVKITARM=/opt/devkitpro/devkitARM
